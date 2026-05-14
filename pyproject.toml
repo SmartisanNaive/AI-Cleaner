@@ -1,0 +1,33 @@
+[project]
+name = "ai-cleaner"
+version = "0.1.0"
+description = "Local text rewriting and LangGraph workflow playground."
+requires-python = ">=3.11"
+dependencies = [
+  "anthropic>=0.49.0",
+  "cryptography>=42.0.0",
+  "fastapi>=0.115.0",
+  "langgraph>=0.2.70",
+  "openai>=1.60.0",
+  "pydantic>=2.10.0",
+  "python-dotenv>=1.0.1",
+  "uvicorn[standard]>=0.34.0",
+]
+
+[dependency-groups]
+dev = [
+  "httpx>=0.27.0",
+  "pytest>=8.3.0",
+  "pytest-asyncio>=0.25.0",
+  "ruff>=0.9.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["backend/tests"]
+asyncio_mode = "auto"
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+exclude = ["backend/app/nlp/humanize_chinese"]
