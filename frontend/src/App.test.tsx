@@ -34,6 +34,6 @@ describe('App', () => {
     render(<App />)
     expect(await screen.findByText('AI-Cleaner')).toBeInTheDocument()
     expect(screen.getByText('输入')).toBeInTheDocument()
-    expect(screen.getByText('仅学术降痕')).toBeInTheDocument()
+    expect(screen.getByText('NLP 降 AIGC')).toBeInTheDocument()
   })
 })

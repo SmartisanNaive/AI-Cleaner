@@ -6,6 +6,7 @@ from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
 
+from .aigc_detector import detect_aigc_risk, format_aigc_report_for_prompt
 from .database import get_history, insert_history
 from .diffing import build_diff, length_warnings
 from .nlp.pipeline import choose_nlp_style, rewrite_with_nlp_style
@@ -40,7 +41,13 @@ def _resolve_runtime(request: RewriteRequest) -> tuple[RuntimeSettings, LLMProvi
     settings = load_settings()
     provider_name = request.provider or settings.provider
     model = request.model or settings.model_for(provider_name)
-    provider = get_provider(settings, provider_name=provider_name, model=model)
+    provider = get_provider(
+        settings,
+        provider_name=provider_name,
+        model=model,
+        base_url=request.base_url,
+        api_key=request.api_key,
+    )
     return settings, provider, provider_name, model
 
 
@@ -87,21 +94,40 @@ async def evaluate_iterate_node(state: WorkflowState) -> WorkflowState:
     feedback: str | None = None
 
     for iteration in range(2, request.iterations + 1):
+        detection_report = detect_aigc_risk(current)
+        detection_prompt = format_aigc_report_for_prompt(detection_report)
         eval_messages = [
             {
                 "role": "system",
                 "content": (
-                    "你是文本改写质量评估 agent。只输出简短可执行的修订意见，"
-                    "不得新增事实，不得要求改变原文核心信息。"
+                    "你是中文论文 AIGC 检测风险评估 agent。"
+                    "你的任务不是润色文章，而是结合本地检测器结果，找出当前改写文本中仍可能被检测为 AI 的语言特征。"
+                    "请只输出简短、可执行的修订意见，禁止输出改写后的正文。"
                 ),
             },
             {
                 "role": "user",
-                "content": f"原文：\n{request.text}\n\n当前改写：\n{current}",
+                "content": (
+                    "请结合本地 humanize-chinese 检测结果，对下面文本做 AIGC 检测风险评估，并给出下一轮修订方向。\n\n"
+                    "本地检测结果：\n"
+                    f"{detection_prompt}\n\n"
+                    "你需要重点检查：\n"
+                    "1. 是否存在模板化连接词或总结腔，如“首先、其次、最后、综上、显著意义、现实而迫切”等。\n"
+                    "2. 是否存在过于工整的并列结构、排比式表达或均匀句长。\n"
+                    "3. 是否存在抽象名词连续堆叠、动词弱化、表达过度凝练的问题。\n"
+                    "4. 是否缺少人工写作中常见的节奏变化、解释性转折和自然语序。\n"
+                    "5. 哪些句子应拆分、调序、换成更自然的学术转述。\n\n"
+                    "输出要求：\n"
+                    "- 最多 6 条。\n"
+                    "- 每条必须是具体可执行的修改建议。\n"
+                    "- 优先引用本地检测结果中的风险词、风险句或统计特征。\n"
+                    "- 不得改变事实、数据、术语和结论。\n\n"
+                    f"原文：\n{request.text}\n\n当前改写：\n{current}"
+                ),
             },
         ]
         feedback = await provider.complete(eval_messages)
-        messages = build_messages(request.platform, current, feedback)
+        messages = build_messages(request.platform, current, feedback, iteration=iteration)
         raw_output = await provider.complete(messages)
         current = extract_rewritten_text(request.platform, raw_output)
 
@@ -148,11 +174,12 @@ async def build_diff_node(state: WorkflowState) -> WorkflowState:
 
 async def persist_record_node(state: WorkflowState) -> WorkflowState:
     created_at = datetime.now(timezone.utc).isoformat()
+    should_persist_text = not (state["request"].api_key and state["request"].api_key.strip())
     record_id = insert_history(
         {
-            "original_text": state["original_text"],
-            "raw_output": state["raw_output"],
-            "rewritten_text": state["current_text"],
+            "original_text": state["original_text"] if should_persist_text else "[自定义 API Key 请求：内容未在服务器保存]",
+            "raw_output": state["raw_output"] if should_persist_text else "",
+            "rewritten_text": state["current_text"] if should_persist_text else "[自定义 API Key 请求：内容未在服务器保存]",
             "platform": state["request"].platform,
             "provider": state["provider_name"],
             "model": state["model"],
@@ -160,7 +187,7 @@ async def persist_record_node(state: WorkflowState) -> WorkflowState:
             "warnings": state["warnings"],
             "nlp_applied": bool(state.get("nlp_applied")),
             "nlp_style": state.get("nlp_style"),
-            "diff": state["diff"],
+            "diff": state["diff"] if should_persist_text else [],
             "created_at": created_at,
         }
     )

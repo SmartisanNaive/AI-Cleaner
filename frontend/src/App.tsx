@@ -1,5 +1,15 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Eraser, FileClock, RotateCcw, Send, Settings, Star, WandSparkles } from 'lucide-react'
+import {
+  Check,
+  Copy,
+  Eraser,
+  FileClock,
+  RotateCcw,
+  Send,
+  Settings,
+  Star,
+  WandSparkles,
+} from 'lucide-react'
 import { DiffView } from './components/DiffView'
 import { HistoryList } from './components/HistoryList'
 import { SettingsPanel } from './components/SettingsPanel'
@@ -56,6 +66,7 @@ export default function App() {
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('就绪')
   const [testResult, setTestResult] = useState('')
+  const [copied, setCopied] = useState(false)
   const [showLengthModal, setShowLengthModal] = useState(false)
 
   const charCount = useMemo(() => countText(text), [text])
@@ -67,6 +78,13 @@ export default function App() {
   async function refresh() {
     const nextSettings = await api.getSettings()
     setSettings(nextSettings)
+    let localOverrides: Record<string, string | boolean> = {}
+    try {
+      const savedDraft = window.localStorage.getItem('ai-cleaner-user-settings')
+      if (savedDraft) localOverrides = JSON.parse(savedDraft) as Record<string, string | boolean>
+    } catch {
+      localOverrides = {}
+    }
     setDraft({
       provider: nextSettings.provider,
       openai_model: nextSettings.openai_model,
@@ -74,6 +92,7 @@ export default function App() {
       openai_base_url: nextSettings.openai_base_url,
       anthropic_base_url: nextSettings.anthropic_base_url,
       stream: nextSettings.stream,
+      ...localOverrides,
     })
     setNlpEnabled(nextSettings.nlp_enabled)
     setNlpMode(nextSettings.nlp_mode === 'off' ? 'manual' : nextSettings.nlp_mode)
@@ -82,7 +101,15 @@ export default function App() {
   }
 
   function updateDraft(key: string, value: string | boolean) {
-    setDraft((current) => ({ ...current, [key]: value }))
+    setDraft((current) => {
+      const next = { ...current, [key]: value }
+      try {
+        window.localStorage.setItem('ai-cleaner-user-settings', JSON.stringify(next))
+      } catch {
+        // Browser storage can be unavailable in private mode.
+      }
+      return next
+    })
   }
 
   async function saveSettings() {
@@ -115,11 +142,18 @@ export default function App() {
   }
 
   function buildPayload() {
+    const provider = String(draft.provider ?? settings?.provider ?? 'openai') as ProviderName
+    const customApiKey = provider === 'openai'
+      ? String(draft.openai_api_key ?? '').trim()
+      : String(draft.anthropic_api_key ?? '').trim()
     return {
       text,
       platform,
       iterations,
-      provider: draft.provider as ProviderName | undefined,
+      provider,
+      model: provider === 'openai' ? String(draft.openai_model ?? '') : String(draft.anthropic_model ?? ''),
+      base_url: provider === 'openai' ? String(draft.openai_base_url ?? '') : String(draft.anthropic_base_url ?? ''),
+      ...(customApiKey ? { api_key: customApiKey } : {}),
       // The primary rewrite action should always use SSE progress.
       // Without this, a slow LLM call leaves the UI stuck at “启动工作流” until the request finishes.
       stream: true,
@@ -151,7 +185,8 @@ export default function App() {
         let currentDiff: DiffSpan[] = []
         await streamRewrite(payload, (event, data) => {
           const d = data as Record<string, unknown>
-          if (event === 'node_started') setStatus(`节点：${String(d.node)}`)
+          if (event === 'stream_started') setStatus(`正在进行：已连接 · ${String(d.stream_id ?? '')}`)
+          if (event === 'node_started') setStatus(`正在进行：${String(d.node)}`)
           if (event === 'nlp_stream_started') {
             streamed = ''
             setOutput('')
@@ -180,7 +215,7 @@ export default function App() {
             setRawOutput(String(d.raw_output ?? ''))
             setStatus(`完成 · #${String(d.id)}`)
           }
-          if (event === 'error') throw new Error(String(d.error ?? '流式请求失败'))
+          if (event === 'error') throw new Error(`${String(d.error ?? '流式请求失败')}${d.stream_id ? ` · ${String(d.stream_id)}` : ''}`)
         })
         setDiff(currentDiff)
       } else {
@@ -218,7 +253,7 @@ export default function App() {
       let currentDiff: DiffSpan[] = []
       await streamNlpRewrite(payload, (event, data) => {
         const d = data as Record<string, unknown>
-        if (event === 'node_started') setStatus(`节点：${String(d.node)}`)
+        if (event === 'node_started') setStatus(`正在进行：${String(d.node)}`)
         if (event === 'nlp_stream_started') {
           streamed = ''
           setOutput('')
@@ -240,7 +275,7 @@ export default function App() {
           setRawOutput(String(d.raw_output ?? ''))
           setStatus(`学术降痕完成 · ${String(d.nlp_style ?? nlpStyle)} · #${String(d.id)}`)
         }
-        if (event === 'error') throw new Error(String(d.error ?? '学术降痕失败'))
+        if (event === 'error') throw new Error(`${String(d.error ?? '学术降痕失败')}${d.stream_id ? ` · ${String(d.stream_id)}` : ''}`)
       })
       setDiff(currentDiff)
       setHistory(await api.history())
@@ -249,6 +284,16 @@ export default function App() {
     } finally {
       setBusy(false)
     }
+  }
+
+  const activeTabIndex = { output: 0, diff: 1, history: 2, settings: 3 }[activeTab]
+
+  async function copyOutput() {
+    if (!output) return
+    await navigator.clipboard.writeText(output)
+    setCopied(true)
+    setStatus('已复制到剪贴板')
+    window.setTimeout(() => setCopied(false), 1400)
   }
 
   function applyResult(result: RewriteResponse) {
@@ -280,7 +325,7 @@ export default function App() {
           </span>
           <div>
             <h1>AI-Cleaner</h1>
-            <p>学术改写工作台 · 流式输出 · 差异可视化</p>
+            <p>404: AI signature not found</p>
           </div>
         </div>
         <div className="topbar-actions">
@@ -315,13 +360,17 @@ export default function App() {
             </label>
           </div>
           <div className="nlp-controls">
-            <label className="inline-check">
+            <label className="switch-card">
               <input
                 type="checkbox"
                 checked={nlpEnabled}
                 onChange={(event) => setNlpEnabled(event.target.checked)}
               />
-              改写后追加学术降痕
+              <span className="switch-visual" aria-hidden="true" />
+              <span className="switch-copy">
+                <strong>Agent 后追加 NLP</strong>
+                <small>主按钮完成后再做一次本地降 AIGC</small>
+              </span>
             </label>
             <label>
               模式
@@ -337,13 +386,16 @@ export default function App() {
                 disabled={nlpMode === 'auto'}
                 onChange={(event) => setNlpStyle(event.target.value as NlpStyle)}
               >
-                <option value="academic">学术论文（主）</option>
+                <option value="academic">学术</option>
                 <option value="general">通用文本</option>
                 <option value="long_blog">自媒体/长篇博客</option>
               </select>
             </label>
             <label>
-              候选
+              <span className="label-with-help">
+                候选
+                <span className="help-dot" aria-label="候选数量说明" data-tip="生成多个 NLP 改写候选并选择检测特征更低的一版；数值越大通常更稳，但耗时更长。">?</span>
+              </span>
               <input
                 type="number"
                 min={0}
@@ -353,7 +405,10 @@ export default function App() {
               />
             </label>
             <label>
-              Seed
+              <span className="label-with-help">
+                Seed
+                <span className="help-dot" aria-label="Seed 参数说明" data-tip="随机种子。填同一个数字会尽量复现实验结果；留空则每次随机。">?</span>
+              </span>
               <input
                 inputMode="numeric"
                 placeholder="随机"
@@ -361,21 +416,27 @@ export default function App() {
                 onChange={(event) => setNlpSeed(event.target.value)}
               />
             </label>
-            <label className="inline-check">
+            <label className="aggressive-card">
               <input
                 type="checkbox"
                 checked={nlpAggressive}
                 onChange={(event) => setNlpAggressive(event.target.checked)}
               />
-              激进模式
+              <span className="aggressive-copy">
+                <strong>激进模式</strong>
+                <small>更强改写，适合检测压力高的文本</small>
+              </span>
+              <span className="aggressive-pill" aria-hidden="true">
+                {nlpAggressive ? 'ON' : 'OFF'}
+              </span>
             </label>
           </div>
           <div className="primary-actions">
             <button className="primary-button" disabled={busy || !text.trim()} type="button" onClick={() => void runRewrite()}>
-              <Send size={16} /> 改写
+              <Send size={16} /> Agent 降 AIGC
             </button>
             <button className="secondary-button" disabled={busy || !text.trim()} type="button" onClick={() => void runNlpOnly()}>
-              <WandSparkles size={16} /> 仅学术降痕
+              <WandSparkles size={16} /> NLP 降 AIGC
             </button>
             <button className="ghost-button" type="button" onClick={() => setText(initialText)}>
               <RotateCcw size={16} /> 示例
@@ -387,7 +448,7 @@ export default function App() {
         </section>
 
         <section className="result-panel animate-fade-in-up" style={{ animationDelay: '0.3s', opacity: 0 }}>
-          <nav className="tabs">
+          <nav className="tabs" data-active={activeTabIndex}>
             <button className={activeTab === 'output' ? 'active' : ''} onClick={() => setActiveTab('output')}>
               <Send size={15} /> 输出
             </button>
@@ -404,6 +465,11 @@ export default function App() {
 
           {activeTab === 'output' && (
             <div className="output-pane">
+              <div className="output-toolbar">
+                <button className="secondary-button copy-button" disabled={!output} type="button" onClick={() => void copyOutput()}>
+                  {copied ? <Check size={15} /> : <Copy size={15} />} {copied ? '已复制' : '一键复制'}
+                </button>
+              </div>
               <TypewriterOutput text={output} placeholder="改写结果会显示在这里" />
               {rawOutput && rawOutput !== output && (
                 <details>

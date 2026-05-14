@@ -1,35 +1,8 @@
 import { useEffect, useRef } from 'react'
-
-const NLP_FORMULAS = [
-  String.raw`\mathcal{L}_{ngram}=-(1/N)\sum_i \log_2 p(c_i | c_{i-2},c_{i-1})`,
-  String.raw`p(c_i | c_{i-2},c_{i-1})=\lambda_3 p_3+\lambda_2 p_2+\lambda_1 p_1`,
-  String.raw`\lambda_1+\lambda_2+\lambda_3=1`,
-  String.raw`PPL(x)=2^{-(1/N)\sum_i \log_2 p(c_i)}`,
-  String.raw`PPL_w=2^{-mean(\log_2 p_i)}`,
-  String.raw`B=std(PPL_w)/mean(PPL_w)`,
-  String.raw`H(C)=-\sum_c p(c)\log_2 p(c)`,
-  String.raw`CV_H=\sigma(H_p)/\mu(H_p)`,
-  String.raw`s_i=-\log_2 p(c_i)`,
-  String.raw`rho_k=sum_t (s_t-mu)(s_{t-k}-mu) / sum_t (s_t-mu)^2`,
-  String.raw`hat{s}_k=sum_t s_t exp(-2*pi*i*k*t/N)`,
-  String.raw`SF=exp(mean(log(|hat{s}|^2)))/mean(|hat{s}|^2)`,
-  String.raw`gamma_1=E[((s-mu)/sigma)^3]`,
-  String.raw`gamma_2=E[((s-mu)/sigma)^4]-3`,
-  String.raw`r_i=rank(c_i | c_{i-1})`,
-  String.raw`GLTR_{10}=count(r_i<=10)/N`,
-  String.raw`CV_len=sigma(L_sent)/mu(L_sent)`,
-  String.raw`q_short=count(L_sent<10)/N_sent`,
-  String.raw`D_comma=100*n_comma/N_char`,
-  String.raw`D_trans=1000*n_trans/N_char`,
-  String.raw`kappa=E[log p(x)-log p(x_tilde)]`,
-  String.raw`Delta_bino=E[log p_primary(c_i)-log p_human(c_i)]`,
-  String.raw`MATTR=E_t[unique(c_t...c_{t+w})/w]`,
-  String.raw`z_j=(x_j-mu_j_train)/sigma_j_train`,
-  String.raw`Pr(y=1 | x)=sigmoid(w^T z+b)`,
-  String.raw`J=-(1/N)sum[y log p+(1-y)log(1-p)]+||w||^2/(2NC)`,
-  String.raw`S=min(100,S_rule+sum_j omega_j I_j)`,
-  String.raw`sigmoid(u)=1/(1+exp(-u))`,
-]
+import {
+  BACKGROUND_FORMULA_SPRITES,
+  type BackgroundFormulaSpriteAsset,
+} from '../generated/backgroundFormulaSprites'
 
 const FORMULA_COLORS = [
   '#0f172a',
@@ -56,6 +29,8 @@ interface FormulaSprite {
 
 interface FormulaParticle {
   sprite: FormulaSprite
+  drawWidth: number
+  drawHeight: number
   x: number
   y: number
   baseX: number
@@ -69,103 +44,73 @@ interface FormulaParticle {
   opacity: number
 }
 
-interface FormulaToken {
-  value: string
-  color: string
-  italic: boolean
-  weight: '400' | '500' | '600'
-}
+const formulaImagePromises = new Map<string, Promise<HTMLImageElement>>()
+const loadedFormulaImages = new Map<string, HTMLImageElement>()
+const tintedSpriteCache = new Map<string, FormulaSprite>()
 
 function randomBetween(min: number, max: number) {
   return min + Math.random() * (max - min)
 }
 
-function tokenizeFormula(formula: string, paletteOffset: number): FormulaToken[] {
-  const pieces =
-    formula.match(/\\[A-Za-z]+|[A-Za-z_]+|\d+(?:\.\d+)?|[=+\-*/^|(),.{}\[\]<>#:]+|\s+|./g) ?? [formula]
+function targetFormulaHeight(viewportWidth: number) {
+  if (viewportWidth < 640) return 21
+  if (viewportWidth < 1440) return 25
+  return 28
+}
 
-  return pieces.map((value, index) => {
-    if (/^\s+$/.test(value)) {
-      return { value, color: 'transparent', italic: false, weight: '400' }
+function targetFormulaMaxWidth(viewportWidth: number) {
+  if (viewportWidth < 640) return 168
+  if (viewportWidth < 1100) return 218
+  if (viewportWidth < 1600) return 254
+  return 290
+}
+
+function loadFormulaImage(asset: BackgroundFormulaSpriteAsset) {
+  const cached = formulaImagePromises.get(asset.id)
+  if (cached) return cached
+
+  const promise = new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image()
+    image.decoding = 'async'
+    image.onload = () => {
+      loadedFormulaImages.set(asset.id, image)
+      resolve(image)
     }
-    if (/^[=+\-*/^|(),.{}\[\]<>#:]+$/.test(value)) {
-      return { value, color: index % 3 === 0 ? '#475569' : '#64748b', italic: false, weight: '400' }
-    }
-    if (/^\d/.test(value)) {
-      return { value, color: '#b45309', italic: false, weight: '600' }
-    }
-    if (/^\\(?:lambda|sigma|mu|rho|gamma|omega|pi|Delta|kappa)$/.test(value)) {
-      return { value, color: '#7c3aed', italic: false, weight: '600' }
-    }
-    if (/^\\(?:sum|log|exp|mean|std|mathcal)$/.test(value)) {
-      return { value, color: '#0891b2', italic: false, weight: '600' }
-    }
-    if (value.startsWith('\\')) {
-      return { value, color: '#7c3aed', italic: false, weight: '600' }
-    }
-    if (/^[A-Z]/.test(value)) {
-      return { value, color: FORMULA_COLORS[(paletteOffset + index + 1) % FORMULA_COLORS.length], italic: true, weight: '600' }
-    }
-    return {
-      value,
-      color: FORMULA_COLORS[(paletteOffset + index) % FORMULA_COLORS.length],
-      italic: /[A-Za-z]/.test(value),
-      weight: '500',
-    }
+    image.onerror = () => reject(new Error(`Failed to load ${asset.url}`))
+    image.src = asset.url
   })
+
+  formulaImagePromises.set(asset.id, promise)
+  return promise
 }
 
-function fontForToken(size: number, token: FormulaToken) {
-  const style = token.italic ? 'italic ' : ''
-  return `${style}${token.weight} ${size}px "SourceHanSerifSC", "Times New Roman", "Georgia", serif`
-}
+function createTintedSprite(asset: BackgroundFormulaSpriteAsset, color: string) {
+  const cacheKey = `${asset.id}:${color}`
+  const cached = tintedSpriteCache.get(cacheKey)
+  if (cached) return cached
 
-function createFormulaSprite(formula: string, size: number, paletteOffset: number, dpr: number): FormulaSprite {
-  const tokens = tokenizeFormula(formula, paletteOffset)
-  const measureCanvas = document.createElement('canvas')
-  const measureCtx = measureCanvas.getContext('2d')
-  if (!measureCtx) {
-    return { canvas: measureCanvas, width: 1, height: 1 }
-  }
+  const image = loadedFormulaImages.get(asset.id)
+  if (!image) return null
 
-  const paddingX = Math.ceil(size * 0.64)
-  const paddingY = Math.ceil(size * 0.46)
-  const gap = size * 0.02
-  const height = Math.ceil(size * 1.62 + paddingY * 2)
-  let width = paddingX * 2
-
-  for (const token of tokens) {
-    measureCtx.font = fontForToken(size, token)
-    width += measureCtx.measureText(token.value).width + gap
-  }
-  width = Math.ceil(width)
-
+  const width = Math.max(1, Math.ceil(asset.width))
+  const height = Math.max(1, Math.ceil(asset.height))
   const canvas = document.createElement('canvas')
-  canvas.width = Math.ceil(width * dpr)
-  canvas.height = Math.ceil(height * dpr)
-  canvas.style.width = `${width}px`
-  canvas.style.height = `${height}px`
+  canvas.width = width
+  canvas.height = height
 
   const ctx = canvas.getContext('2d')
-  if (!ctx) return { canvas, width, height }
+  if (!ctx) return null
 
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-  ctx.textBaseline = 'middle'
-  ctx.shadowColor = 'rgba(255,255,255,0.55)'
-  ctx.shadowBlur = 2
+  ctx.clearRect(0, 0, width, height)
+  ctx.drawImage(image, 0, 0, width, height)
+  ctx.globalCompositeOperation = 'source-in'
+  ctx.fillStyle = color
+  ctx.fillRect(0, 0, width, height)
+  ctx.globalCompositeOperation = 'source-over'
 
-  let x = paddingX
-  const y = height / 2
-  for (const token of tokens) {
-    ctx.font = fontForToken(size, token)
-    ctx.fillStyle = token.color
-    ctx.globalAlpha = token.color === 'transparent' ? 0 : 1
-    ctx.fillText(token.value, x, y)
-    x += ctx.measureText(token.value).width + gap
-  }
-  ctx.globalAlpha = 1
-
-  return { canvas, width, height }
+  const sprite = { canvas, width, height }
+  tintedSpriteCache.set(cacheKey, sprite)
+  return sprite
 }
 
 export function WindCanvas() {
@@ -193,6 +138,8 @@ export function WindCanvas() {
     let gustActive = false
     let gustX = -GUST_WIDTH
     let gustDirection = 1
+    let assetsReady = false
+    let disposed = false
     let particles: FormulaParticle[] = []
     const dpr = window.devicePixelRatio || 1
     const mouse = {
@@ -204,70 +151,87 @@ export function WindCanvas() {
       smoothY: -9999,
     }
 
-    async function ensureFormulaFontLoaded() {
-      if (!document.fonts?.load) return
-      await Promise.all([
-        document.fonts.load('400 14px SourceHanSerifSC'),
-        document.fonts.load('500 14px SourceHanSerifSC'),
-        document.fonts.load('600 14px SourceHanSerifSC'),
-      ])
-    }
-
-    function formulaSize() {
-      if (width < 640) return 12
-      if (width < 1440) return 14
-      return 15
-    }
-
     function build() {
-      particles = []
-      const size = formulaSize()
-      const padX = width < 640 ? 12 : 24
-      const lineHeight = width < 640 ? 34 : width < 1440 ? 39 : 42
-      const spriteCache = new Map<string, FormulaSprite>()
-      let x = padX
-      let y = width < 640 ? 42 : 48
-      let index = 0
-      let safety = 0
+      if (!assetsReady) return
 
-      while (y < height + lineHeight * 2 && safety < 1000) {
-        const formulaIndex = index % NLP_FORMULAS.length
-        const formula = NLP_FORMULAS[formulaIndex]
-        const key = `${formulaIndex}-${size}-${dpr}`
-        let sprite = spriteCache.get(key)
-        if (!sprite) {
-          sprite = createFormulaSprite(formula, size, formulaIndex, dpr)
-          spriteCache.set(key, sprite)
+      particles = []
+      const padX = width < 640 ? 12 : 24
+      const rowGap = width < 640 ? 16 : width < 1440 ? 20 : 22
+      const baseHeight = targetFormulaHeight(width)
+      const maxWidth = targetFormulaMaxWidth(width)
+      let x = padX + randomBetween(-8, 18)
+      let y = width < 640 ? 26 : 34
+      let rowHeight = 0
+      let assetIndex = 0
+      let safety = 0
+      let rowSprites: Array<{
+        sprite: FormulaSprite
+        drawWidth: number
+        drawHeight: number
+        x: number
+      }> = []
+
+      function commitRow() {
+        if (!rowSprites.length) return
+
+        const centerY = y + rowHeight / 2
+        for (const rowSprite of rowSprites) {
+          const { sprite, drawWidth, drawHeight, x: rowX } = rowSprite
+          const baseX = rowX + drawWidth / 2 + randomBetween(-4, 4)
+          const baseY = centerY + randomBetween(-3, 3)
+          particles.push({
+            sprite,
+            drawWidth,
+            drawHeight,
+            x: baseX + randomBetween(-0.4, 0.4),
+            y: baseY + randomBetween(-0.4, 0.4),
+            baseX,
+            baseY,
+            vx: randomBetween(-0.05, 0.05),
+            vy: randomBetween(-0.04, 0.04),
+            angle: randomBetween(-0.025, 0.025),
+            angularVelocity: 0,
+            phase: randomBetween(0, Math.PI * 2),
+            mass: randomBetween(1.2, 2.7) + drawWidth / 320 + rowHeight / 380,
+            opacity: randomBetween(0.32, 0.58),
+          })
         }
 
-        const gap = randomBetween(width < 640 ? 18 : 28, width < 640 ? 36 : 58)
-        if (x + sprite.width > width - padX && x > padX) {
-          x = padX + randomBetween(-8, 18)
-          y += lineHeight + randomBetween(-4, 6)
+        y += rowHeight + rowGap + randomBetween(-4, 6)
+        x = padX + randomBetween(-8, 18)
+        rowHeight = 0
+        rowSprites = []
+      }
+
+      while (y < height + rowGap * 2 && safety < 1000) {
+        const asset = BACKGROUND_FORMULA_SPRITES[assetIndex % BACKGROUND_FORMULA_SPRITES.length]
+        const colorIndex = (assetIndex + Math.floor(randomBetween(0, FORMULA_COLORS.length))) % FORMULA_COLORS.length
+        const sprite = createTintedSprite(asset, FORMULA_COLORS[colorIndex])
+        assetIndex += 1
+        safety += 1
+
+        if (!sprite) continue
+
+        let drawHeight = baseHeight * randomBetween(0.92, 1.08)
+        let drawWidth = sprite.width * (drawHeight / sprite.height)
+        if (drawWidth > maxWidth) {
+          const fitScale = maxWidth / drawWidth
+          drawWidth *= fitScale
+          drawHeight *= fitScale
+        }
+
+        const gap = randomBetween(width < 640 ? 14 : 24, width < 640 ? 24 : 42)
+        if (x + drawWidth > width - padX && rowSprites.length) {
+          commitRow()
           continue
         }
 
-        const baseX = x + sprite.width / 2 + randomBetween(-4, 4)
-        const baseY = y + randomBetween(-3, 3)
-        particles.push({
-          sprite,
-          x: baseX + randomBetween(-0.4, 0.4),
-          y: baseY + randomBetween(-0.4, 0.4),
-          baseX,
-          baseY,
-          vx: randomBetween(-0.05, 0.05),
-          vy: randomBetween(-0.04, 0.04),
-          angle: randomBetween(-0.025, 0.025),
-          angularVelocity: 0,
-          phase: randomBetween(0, Math.PI * 2),
-          mass: randomBetween(1.2, 2.7) + sprite.width / 360,
-          opacity: randomBetween(0.36, 0.66),
-        })
-
-        x += sprite.width + gap
-        index += 1
-        safety += 1
+        rowSprites.push({ sprite, drawWidth, drawHeight, x })
+        rowHeight = Math.max(rowHeight, drawHeight)
+        x += drawWidth + gap
       }
+
+      commitRow()
     }
 
     function resize() {
@@ -278,20 +242,29 @@ export function WindCanvas() {
       canvasEl.style.width = `${width}px`
       canvasEl.style.height = `${height}px`
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-      build()
+      ctx.imageSmoothingEnabled = true
+      if (assetsReady) build()
     }
 
     function updateWind() {
-      const dx = mouse.x - mouse.prevX
-      const dy = mouse.y - mouse.prevY
+      const pointerActive = mouse.x > -9000 && mouse.y > -9000
+      const dx = pointerActive ? mouse.x - mouse.prevX : 0
+      const dy = pointerActive ? mouse.y - mouse.prevY : 0
       windVx += (dx * 0.42 - windVx) * 0.16
       windVy += (dy * 0.28 - windVy) * 0.16
       windVx *= WIND_DECAY
       windVy *= WIND_DECAY
-      mouse.prevX += (mouse.x - mouse.prevX) * 0.22
-      mouse.prevY += (mouse.y - mouse.prevY) * 0.22
-      mouse.smoothX += (mouse.x - mouse.smoothX) * 0.18
-      mouse.smoothY += (mouse.y - mouse.smoothY) * 0.18
+      if (pointerActive) {
+        mouse.prevX += (mouse.x - mouse.prevX) * 0.22
+        mouse.prevY += (mouse.y - mouse.prevY) * 0.22
+        mouse.smoothX += (mouse.x - mouse.smoothX) * 0.18
+        mouse.smoothY += (mouse.y - mouse.smoothY) * 0.18
+      } else {
+        mouse.prevX = -9999
+        mouse.prevY = -9999
+        mouse.smoothX = -9999
+        mouse.smoothY = -9999
+      }
 
       globalWindX = Math.sin(time * 0.32) * 0.08 + Math.sin(time * 0.73) * 0.035
       globalWindY = Math.cos(time * 0.24) * 0.025
@@ -384,10 +357,10 @@ export function WindCanvas() {
         ctx.globalAlpha = Math.min(0.84, particle.opacity + force * 0.18 + Math.abs(gust) * 0.16)
         ctx.drawImage(
           particle.sprite.canvas,
-          -particle.sprite.width / 2,
-          -particle.sprite.height / 2,
-          particle.sprite.width,
-          particle.sprite.height,
+          -particle.drawWidth / 2,
+          -particle.drawHeight / 2,
+          particle.drawWidth,
+          particle.drawHeight,
         )
         ctx.restore()
       }
@@ -413,9 +386,16 @@ export function WindCanvas() {
     }
 
     resize()
-    void ensureFormulaFontLoaded().then(() => {
-      build()
-    })
+    void Promise.all(BACKGROUND_FORMULA_SPRITES.map(loadFormulaImage))
+      .then(() => {
+        if (disposed) return
+        assetsReady = true
+        build()
+      })
+      .catch((error) => {
+        console.error('Failed to prepare background formula sprites.', error)
+      })
+
     raf = requestAnimationFrame((now) => {
       last = now
       draw(now)
@@ -425,6 +405,7 @@ export function WindCanvas() {
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseleave', onLeave)
     return () => {
+      disposed = true
       cancelAnimationFrame(raf)
       window.removeEventListener('resize', resize)
       window.removeEventListener('mousemove', onMove)

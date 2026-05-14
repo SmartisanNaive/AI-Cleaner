@@ -10,7 +10,7 @@ export function DiffView({ spans }: { spans: DiffSpan[] }) {
           {spans.map((span, index) => (
             <span
               key={`o-${index}`}
-              className={span.kind === 'delete' || span.kind === 'replace' ? 'diff-delete' : ''}
+              className={span.kind === 'delete' || span.kind === 'replace' ? 'diff-delete red-ink-mark' : ''}
             >
               {span.original}
             </span>
@@ -23,7 +23,7 @@ export function DiffView({ spans }: { spans: DiffSpan[] }) {
           {spans.map((span, index) => (
             <span
               key={`r-${index}`}
-              className={span.kind === 'insert' || span.kind === 'replace' ? 'diff-insert' : ''}
+              className={span.kind === 'insert' || span.kind === 'replace' ? 'diff-insert black-ink-mark' : ''}
             >
               {span.revised}
             </span>

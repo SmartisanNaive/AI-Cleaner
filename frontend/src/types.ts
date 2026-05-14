@@ -29,6 +29,8 @@ export interface RewriteRequest {
   iterations: number
   provider?: ProviderName
   model?: string
+  base_url?: string
+  api_key?: string
   stream: boolean
   nlp_enabled?: boolean
   nlp_mode?: NlpMode

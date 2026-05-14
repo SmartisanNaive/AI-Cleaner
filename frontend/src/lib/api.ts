@@ -47,18 +47,51 @@ async function streamJson<TPayload>(
   const reader = response.body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const messages = buffer.split('\n\n')
-    buffer = messages.pop() ?? ''
-    for (const message of messages) {
-      const eventLine = message.split('\n').find((line) => line.startsWith('event: '))
-      const dataLine = message.split('\n').find((line) => line.startsWith('data: '))
-      if (!eventLine || !dataLine) continue
-      onEvent(eventLine.slice(7), JSON.parse(dataLine.slice(6)))
+  let lastEvent = ''
+  let streamId = ''
+  let handlerError: unknown = null
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const messages = buffer.split('\n\n')
+      buffer = messages.pop() ?? ''
+      for (const message of messages) {
+        const eventLine = message.split('\n').find((line) => line.startsWith('event: '))
+        const dataLine = message.split('\n').find((line) => line.startsWith('data: '))
+        if (!eventLine || !dataLine) continue
+        const event = eventLine.slice(7)
+        const data = JSON.parse(dataLine.slice(6)) as Record<string, unknown>
+        lastEvent = event
+        streamId = String(data.stream_id ?? data.streamId ?? streamId)
+        try {
+          onEvent(event, data)
+        } catch (error) {
+          handlerError = error
+          if (event !== 'error') {
+            console.error('[streamJson] event handler failed', { url, streamId, event, message, error })
+          }
+          throw error
+        }
+      }
     }
+  } catch (error) {
+    if (handlerError === error) {
+      throw error
+    }
+
+    console.error('[streamJson] stream read failed', {
+      url,
+      streamId,
+      lastEvent,
+      bufferedBytes: buffer.length,
+      bufferedPreview: buffer.slice(0, 500),
+      error,
+    })
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`流式连接中断${streamId ? `（${streamId}）` : ''}：${message}`)
   }
 }
 

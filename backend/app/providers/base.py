@@ -19,6 +19,6 @@ class LLMProvider(Protocol):
     async def complete(self, messages: list[dict[str, str]]) -> str:
         ...
 
-    async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
+    async def stream(self, messages: list[dict[str, str]], request_id: str | None = None) -> AsyncIterator[str]:
         ...
 

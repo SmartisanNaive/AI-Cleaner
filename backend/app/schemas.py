@@ -68,6 +68,8 @@ class RewriteRequest(BaseModel):
     iterations: int = Field(default=1, ge=1, le=5)
     provider: ProviderName | None = None
     model: str | None = None
+    base_url: str | None = None
+    api_key: str | None = None
     stream: bool = False
     nlp_enabled: bool | None = None
     nlp_mode: NlpMode | None = None

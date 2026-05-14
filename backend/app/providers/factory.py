@@ -17,12 +17,18 @@ def get_provider(
     resolved_model = model or settings.model_for(active)
     resolved_base_url = base_url or settings.base_url_for(active)
     resolved_key = api_key or settings.api_key_for(active)
+    if active == "openai":
+        request_url = resolved_base_url.rstrip("/") + "/chat/completions"
+    elif active == "anthropic":
+        request_url = resolved_base_url.rstrip("/") + "/v1/messages"
+    else:
+        request_url = settings.request_url_for(active)
     config = ProviderConfig(
         provider=active,
         model=resolved_model,
         base_url=resolved_base_url,
         api_key=resolved_key,
-        request_url=settings.request_url_for(active),
+        request_url=request_url,
     )
     if active == "openai":
         return OpenAIProvider(config)

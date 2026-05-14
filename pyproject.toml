@@ -1,6 +1,6 @@
 [project]
 name = "ai-cleaner"
-version = "0.1.0"
+version = "0.1.1"
 description = "Local text rewriting and LangGraph workflow playground."
 requires-python = ">=3.11"
 dependencies = [

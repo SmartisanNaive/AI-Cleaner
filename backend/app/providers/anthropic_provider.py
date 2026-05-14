@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
 from typing import AsyncIterator
 
 from .base import ProviderConfig
+
+
+logger = logging.getLogger(__name__)
 
 
 class AnthropicProvider:
@@ -30,27 +34,36 @@ class AnthropicProvider:
     async def complete(self, messages: list[dict[str, str]]) -> str:
         system, user_messages = self._split_messages(messages)
         client = self._client()
-        response = await client.messages.create(
-            model=self.config.model,
-            max_tokens=4096,
-            temperature=0.7,
-            system=system or None,
-            messages=user_messages,  # type: ignore[arg-type]
-        )
-        chunks = [block.text for block in response.content if getattr(block, "type", None) == "text"]
-        return "".join(chunks)
+        try:
+            response = await client.messages.create(
+                model=self.config.model,
+                max_tokens=4096,
+                temperature=0.7,
+                system=system or None,
+                messages=user_messages,  # type: ignore[arg-type]
+            )
+            chunks = [block.text for block in response.content if getattr(block, "type", None) == "text"]
+            return "".join(chunks)
+        except Exception:
+            logger.exception("Anthropic complete failed: model=%s base_url=%s", self.config.model, self.config.base_url)
+            raise
 
-    async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
+    async def stream(self, messages: list[dict[str, str]], request_id: str | None = None) -> AsyncIterator[str]:
         system, user_messages = self._split_messages(messages)
         client = self._client()
-        async with client.messages.stream(
-            model=self.config.model,
-            max_tokens=4096,
-            temperature=0.7,
-            system=system or None,
-            messages=user_messages,  # type: ignore[arg-type]
-        ) as stream:
-            async for text in stream.text_stream:
-                if text:
-                    yield text
+        try:
+            async with client.messages.stream(
+                model=self.config.model,
+                max_tokens=4096,
+                temperature=0.7,
+                system=system or None,
+                messages=user_messages,  # type: ignore[arg-type]
+                extra_headers={"X-Request-ID": request_id} if request_id else None,
+            ) as stream:
+                async for text in stream.text_stream:
+                    if text:
+                        yield text
+        except Exception:
+            logger.exception("Anthropic stream failed: request_id=%s model=%s base_url=%s", request_id, self.config.model, self.config.base_url)
+            raise
 
