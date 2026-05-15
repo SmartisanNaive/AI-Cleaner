@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import {
   Check,
   Copy,
@@ -16,16 +16,15 @@ import { SettingsPanel } from './components/SettingsPanel'
 import { TypewriterOutput } from './components/TypewriterOutput'
 import { WindCanvas } from './components/WindCanvas'
 import { api, streamNlpRewrite, streamRewrite } from './lib/api'
-import type {
-  DiffSpan,
-  HistoryItem,
-  NlpMode,
-  NlpStyle,
-  PlatformName,
-  ProviderName,
-  RewriteResponse,
-  SettingsView,
-} from './types'
+import {
+  deleteLocalHistory,
+  loadLocalHistory,
+  loadLocalSettings,
+  saveLocalSettings,
+  toHistoryItems,
+  upsertLocalHistory,
+} from './lib/localState'
+import type { DiffSpan, LocalSettings, NlpMode, NlpStyle, PlatformName, ProviderName, RewriteResponse } from './types'
 
 const initialText =
   '自然语言处理是一门融合了计算机科学、数学与语言学的综合性学科，而文本分类作为其重要的研究方向，在大数据时代具有显著意义——文本型数据凭借其存储轻便、描述力强的特点，成为最常见的电子数据类型之一。如何在海量文本中高效且准确地提取所需信息，已成为一个现实而迫切的问题。本文主要基于自然语言处理中的文本数据处理方法与机器学习理论，对文本分类模型的实现展开研究。实验部分采用Python进行编程，围绕以下内容展开：首先，综合阐述文本分类的相关理论与发展现状，介绍文本处理流程，使用TF-IDF进行特征提取，并对比jieba、SnowNLP、pkuseg三种分词工具，最终选定pkuseg作为本文数据的最优切词方案。其次，通过加权F1值、准确率等指标评估算法性能，除基础的KNN、决策树、支持向量机外，还引入了随机森林、GBDT、XGBoost、LightGBM等集成学习方法。实验表明，集成模型整体表现优于基础模型。最后，采用Stacking融合策略分别对四个基础模型与四个集成模型进行集成，结果发现融合后的模型多数情况下优于单个模型，整体体现出Stacking策略的优越性。其中，以梯度提升树作为次级学习器的Stacking集成模型效果最佳，其加权F1值达xxxx，准确率约为xxxx%，从而验证了Stacking集成算法在文本分类中的有效性与准确性。'
@@ -46,23 +45,71 @@ function parseSeed(value: string) {
   return Number.isFinite(seed) ? Math.trunc(seed) : undefined
 }
 
+function buildDraft(settings: LocalSettings): Record<string, string | boolean> {
+  return {
+    provider: settings.provider,
+    openai_model: settings.openai_model,
+    anthropic_model: settings.anthropic_model,
+    openai_base_url: settings.openai_base_url,
+    anthropic_base_url: settings.anthropic_base_url,
+    openai_api_key: settings.openai_api_key,
+    anthropic_api_key: settings.anthropic_api_key,
+    remember_api_keys: settings.remember_api_keys,
+    remember_history: settings.remember_history,
+    stream: settings.stream,
+  }
+}
+
+function buildSavedSettings(
+  draft: Record<string, string | boolean>,
+  nlpEnabled: boolean,
+  nlpMode: NlpMode,
+  nlpStyle: NlpStyle,
+  nlpBestOfN: number,
+  nlpSeed: string,
+  nlpAggressive: boolean,
+): LocalSettings {
+  return {
+    provider: String(draft.provider ?? 'openai') as ProviderName,
+    openai_model: String(draft.openai_model ?? ''),
+    anthropic_model: String(draft.anthropic_model ?? ''),
+    openai_base_url: String(draft.openai_base_url ?? ''),
+    anthropic_base_url: String(draft.anthropic_base_url ?? ''),
+    openai_api_key: String(draft.openai_api_key ?? ''),
+    anthropic_api_key: String(draft.anthropic_api_key ?? ''),
+    remember_api_keys: Boolean(draft.remember_api_keys),
+    remember_history: Boolean(draft.remember_history),
+    stream: Boolean(draft.stream),
+    nlp_enabled: nlpEnabled,
+    nlp_mode: nlpMode,
+    nlp_style: nlpStyle,
+    nlp_best_of_n: clampBestOfN(nlpBestOfN),
+    nlp_seed: nlpSeed,
+    nlp_aggressive: nlpAggressive,
+  }
+}
+
+function asRewriteResponse(data: unknown): RewriteResponse {
+  return data as RewriteResponse
+}
+
 export default function App() {
-  const [settings, setSettings] = useState<SettingsView | null>(null)
-  const [draft, setDraft] = useState<Record<string, string | boolean>>({})
+  const [storedSettings] = useState<LocalSettings>(() => loadLocalSettings())
+  const [draft, setDraft] = useState<Record<string, string | boolean>>(() => buildDraft(storedSettings))
   const [text, setText] = useState(initialText)
   const [platform, setPlatform] = useState<PlatformName>('weipu')
   const [iterations, setIterations] = useState(1)
-  const [nlpEnabled, setNlpEnabled] = useState(false)
-  const [nlpMode, setNlpMode] = useState<NlpMode>('manual')
-  const [nlpStyle, setNlpStyle] = useState<NlpStyle>('academic')
-  const [nlpBestOfN, setNlpBestOfN] = useState(10)
-  const [nlpSeed, setNlpSeed] = useState('')
-  const [nlpAggressive, setNlpAggressive] = useState(false)
+  const [nlpEnabled, setNlpEnabled] = useState(storedSettings.nlp_enabled)
+  const [nlpMode, setNlpMode] = useState<NlpMode>(storedSettings.nlp_mode === 'off' ? 'manual' : storedSettings.nlp_mode)
+  const [nlpStyle, setNlpStyle] = useState<NlpStyle>(storedSettings.nlp_style)
+  const [nlpBestOfN, setNlpBestOfN] = useState(storedSettings.nlp_best_of_n)
+  const [nlpSeed, setNlpSeed] = useState(storedSettings.nlp_seed)
+  const [nlpAggressive, setNlpAggressive] = useState(storedSettings.nlp_aggressive)
   const [activeTab, setActiveTab] = useState<'output' | 'diff' | 'history' | 'settings'>('output')
   const [output, setOutput] = useState('')
   const [rawOutput, setRawOutput] = useState('')
   const [diff, setDiff] = useState<DiffSpan[]>([])
-  const [history, setHistory] = useState<HistoryItem[]>([])
+  const [history, setHistory] = useState<RewriteResponse[]>(() => loadLocalHistory(storedSettings.remember_history))
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('就绪')
   const [testResult, setTestResult] = useState('')
@@ -70,91 +117,29 @@ export default function App() {
   const [showLengthModal, setShowLengthModal] = useState(false)
 
   const charCount = useMemo(() => countText(text), [text])
-
-  useEffect(() => {
-    void refresh()
-  }, [])
-
-  async function refresh() {
-    let nextSettings: SettingsView
-    try {
-      nextSettings = await api.getSettings()
-    } catch (err) {
-      console.error('[refresh] getSettings failed, using defaults:', err)
-      nextSettings = {
-        provider: 'openai',
-        openai_model: '',
-        anthropic_model: '',
-        openai_base_url: 'https://api.openai.com/v1',
-        anthropic_base_url: 'https://api.anthropic.com',
-        openai_api_key_set: false,
-        anthropic_api_key_set: false,
-        openai_api_key_source: 'missing',
-        anthropic_api_key_source: 'missing',
-        stream: false,
-        nlp_enabled: false,
-        nlp_mode: 'manual',
-        nlp_style: 'academic',
-        openai_request_url: '',
-        anthropic_request_url: '',
-        warnings: [],
-      }
-      setStatus('无法连接后端，请确认服务已启动')
-    }
-    setSettings(nextSettings)
-    let localOverrides: Record<string, string | boolean> = {}
-    try {
-      const savedDraft = window.localStorage.getItem('ai-cleaner-user-settings')
-      if (savedDraft) localOverrides = JSON.parse(savedDraft) as Record<string, string | boolean>
-    } catch {
-      localOverrides = {}
-    }
-    setDraft({
-      provider: nextSettings.provider,
-      openai_model: nextSettings.openai_model,
-      anthropic_model: nextSettings.anthropic_model,
-      openai_base_url: nextSettings.openai_base_url,
-      anthropic_base_url: nextSettings.anthropic_base_url,
-      stream: nextSettings.stream,
-      ...localOverrides,
-    })
-    setNlpEnabled(nextSettings.nlp_enabled)
-    setNlpMode(nextSettings.nlp_mode === 'off' ? 'manual' : nextSettings.nlp_mode)
-    setNlpStyle(nextSettings.nlp_style)
-    try {
-      setHistory(await api.history())
-    } catch (err) {
-      console.error('[refresh] history failed:', err)
-    }
-  }
+  const historyItems = useMemo(() => toHistoryItems(history), [history])
 
   function updateDraft(key: string, value: string | boolean) {
-    setDraft((current) => {
-      const next = { ...current, [key]: value }
-      try {
-        window.localStorage.setItem('ai-cleaner-user-settings', JSON.stringify(next))
-      } catch {
-        // Browser storage can be unavailable in private mode.
-      }
-      return next
-    })
+    setDraft((current) => ({ ...current, [key]: value }))
   }
 
   async function saveSettings() {
-    setStatus('保存设置中')
-    const saved = await api.saveSettings({
-      ...draft,
-      nlp_enabled: nlpEnabled,
-      nlp_mode: nlpMode,
-      nlp_style: nlpStyle,
-    })
-    setSettings(saved)
-    setStatus('设置已保存')
+    const nextSettings = buildSavedSettings(draft, nlpEnabled, nlpMode, nlpStyle, nlpBestOfN, nlpSeed, nlpAggressive)
+    saveLocalSettings(nextSettings)
+    setStatus(
+      nextSettings.remember_api_keys
+        ? nextSettings.remember_history
+          ? '设置已保存到当前浏览器'
+          : '设置已保存；历史不会跨刷新保留'
+        : nextSettings.remember_history
+          ? '设置已保存；API Key 仅保留在当前页面'
+          : '设置已保存；API Key 与历史默认不落地',
+    )
   }
 
   async function testProvider() {
     setStatus('测试 SDK 连接')
-    const provider = String(draft.provider ?? settings?.provider ?? 'openai')
+    const provider = String(draft.provider ?? 'openai')
     const result = await api.testSettings({
       provider,
       model: provider === 'openai' ? draft.openai_model : draft.anthropic_model,
@@ -170,7 +155,7 @@ export default function App() {
   }
 
   function buildPayload() {
-    const provider = String(draft.provider ?? settings?.provider ?? 'openai') as ProviderName
+    const provider = String(draft.provider ?? 'openai') as ProviderName
     const customApiKey = provider === 'openai'
       ? String(draft.openai_api_key ?? '').trim()
       : String(draft.anthropic_api_key ?? '').trim()
@@ -182,9 +167,7 @@ export default function App() {
       model: provider === 'openai' ? String(draft.openai_model ?? '') : String(draft.anthropic_model ?? ''),
       base_url: provider === 'openai' ? String(draft.openai_base_url ?? '') : String(draft.anthropic_base_url ?? ''),
       ...(customApiKey ? { api_key: customApiKey } : {}),
-      // The primary rewrite action should always use SSE progress.
-      // Without this, a slow LLM call leaves the UI stuck at “启动工作流” until the request finishes.
-      stream: true,
+      stream: Boolean(draft.stream),
       nlp_enabled: nlpEnabled,
       nlp_mode: nlpMode,
       nlp_style: nlpStyle,
@@ -192,6 +175,17 @@ export default function App() {
       nlp_best_of_n: clampBestOfN(nlpBestOfN),
       nlp_seed: parseSeed(nlpSeed),
     }
+  }
+
+  function applyResult(result: RewriteResponse) {
+    setOutput(result.rewritten_text)
+    setRawOutput(result.raw_output)
+    setDiff(result.diff)
+    setPlatform(result.platform)
+  }
+
+  function rememberResult(result: RewriteResponse) {
+    setHistory((current) => upsertLocalHistory(result, current, Boolean(draft.remember_history)))
   }
 
   async function runRewrite(force = false) {
@@ -211,6 +205,7 @@ export default function App() {
       if (payload.stream) {
         let streamed = ''
         let currentDiff: DiffSpan[] = []
+        let finalResult: RewriteResponse | null = null
         await streamRewrite(payload, (event, data) => {
           const d = data as Record<string, unknown>
           if (event === 'stream_started') setStatus(`正在进行：已连接 · ${String(d.stream_id ?? '')}`)
@@ -239,19 +234,20 @@ export default function App() {
             setDiff(currentDiff)
           }
           if (event === 'done') {
-            setOutput(String(d.text ?? ''))
-            setRawOutput(String(d.raw_output ?? ''))
-            setStatus(`完成 · #${String(d.id)}`)
+            finalResult = asRewriteResponse(data)
+            applyResult(finalResult)
+            setStatus(`完成 · #${String(finalResult.id)}`)
           }
           if (event === 'error') throw new Error(`${String(d.error ?? '流式请求失败')}${d.stream_id ? ` · ${String(d.stream_id)}` : ''}`)
         })
         setDiff(currentDiff)
+        if (finalResult) rememberResult(finalResult)
       } else {
         const result = await api.rewrite(payload)
         applyResult(result)
+        rememberResult(result)
         setStatus(`完成 · #${result.id}`)
       }
-      setHistory(await api.history())
     } catch (error) {
       setStatus(error instanceof Error ? error.message : '请求失败')
     } finally {
@@ -279,6 +275,7 @@ export default function App() {
       }
       let streamed = ''
       let currentDiff: DiffSpan[] = []
+      let finalResult: RewriteResponse | null = null
       await streamNlpRewrite(payload, (event, data) => {
         const d = data as Record<string, unknown>
         if (event === 'node_started') setStatus(`正在进行：${String(d.node)}`)
@@ -299,14 +296,14 @@ export default function App() {
           setDiff(currentDiff)
         }
         if (event === 'done') {
-          setOutput(String(d.text ?? streamed))
-          setRawOutput(String(d.raw_output ?? ''))
-          setStatus(`学术降痕完成 · ${String(d.nlp_style ?? nlpStyle)} · #${String(d.id)}`)
+          finalResult = asRewriteResponse(data)
+          applyResult(finalResult)
+          setStatus(`学术降痕完成 · ${String(finalResult.nlp_style ?? nlpStyle)} · #${String(finalResult.id)}`)
         }
         if (event === 'error') throw new Error(`${String(d.error ?? '学术降痕失败')}${d.stream_id ? ` · ${String(d.stream_id)}` : ''}`)
       })
       setDiff(currentDiff)
-      setHistory(await api.history())
+      if (finalResult) rememberResult(finalResult)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : '学术降痕失败')
     } finally {
@@ -324,23 +321,20 @@ export default function App() {
     window.setTimeout(() => setCopied(false), 1400)
   }
 
-  function applyResult(result: RewriteResponse) {
-    setOutput(result.rewritten_text)
-    setRawOutput(result.raw_output)
-    setDiff(result.diff)
-    setPlatform(result.platform)
-  }
-
-  async function openHistory(id: number) {
-    const result = await api.historyDetail(id)
+  function openHistory(id: number) {
+    const result = history.find((item) => item.id === id)
+    if (!result) {
+      setStatus('未找到本地历史记录')
+      return
+    }
     applyResult(result)
     setText(result.original_text)
     setActiveTab('diff')
   }
 
-  async function deleteHistory(id: number) {
-    await api.deleteHistory(id)
-    setHistory(await api.history())
+  function deleteHistory(id: number) {
+    setHistory((current) => deleteLocalHistory(id, current, Boolean(draft.remember_history)))
+    setStatus('本地历史已删除')
   }
 
   return (
@@ -509,11 +503,10 @@ export default function App() {
           )}
           {activeTab === 'diff' && <DiffView spans={diff} />}
           {activeTab === 'history' && (
-            <HistoryList items={history} onOpen={(id) => void openHistory(id)} onDelete={(id) => void deleteHistory(id)} />
+            <HistoryList items={historyItems} onOpen={openHistory} onDelete={deleteHistory} />
           )}
           {activeTab === 'settings' && (
             <SettingsPanel
-              settings={settings}
               draft={draft}
               testResult={testResult}
               onDraft={updateDraft}

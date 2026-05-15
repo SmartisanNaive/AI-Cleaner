@@ -1,25 +1,22 @@
 from __future__ import annotations
 
-import json
-from datetime import datetime, timezone
-from typing import Any, Literal, TypedDict
+from typing import Literal, TypedDict
 
 from langgraph.graph import END, StateGraph
 
 from .aigc_detector import detect_aigc_risk, format_aigc_report_for_prompt
-from .database import get_history, insert_history
 from .diffing import build_diff, length_warnings
 from .nlp.pipeline import choose_nlp_style, rewrite_with_nlp_style
 from .prompt_service import build_messages, extract_rewritten_text
 from .providers import get_provider
 from .providers.base import LLMProvider
+from .response_utils import build_rewrite_response
+from .runtime_config import resolve_provider_config
 from .schemas import RewriteRequest, RewriteResponse
-from .settings_service import RuntimeSettings, load_settings
 
 
 class WorkflowState(TypedDict, total=False):
     request: RewriteRequest
-    settings: RuntimeSettings
     provider: LLMProvider
     provider_name: str
     model: str
@@ -33,31 +30,25 @@ class WorkflowState(TypedDict, total=False):
     nlp_applied: bool
     nlp_style: str | None
     diff: list[dict[str, str]]
-    record_id: int
-    created_at: str
 
 
-def _resolve_runtime(request: RewriteRequest) -> tuple[RuntimeSettings, LLMProvider, str, str]:
-    settings = load_settings()
-    provider_name = request.provider or settings.provider
-    model = request.model or settings.model_for(provider_name)
-    provider = get_provider(
-        settings,
-        provider_name=provider_name,
-        model=model,
+def _resolve_runtime(request: RewriteRequest) -> tuple[LLMProvider, str, str]:
+    config = resolve_provider_config(
+        provider_name=request.provider,
+        model=request.model,
         base_url=request.base_url,
         api_key=request.api_key,
     )
-    return settings, provider, provider_name, model
+    provider = get_provider(config)
+    return provider, config.provider, config.model
 
 
 async def validate_length_node(state: WorkflowState) -> WorkflowState:
     request = state["request"]
-    settings, provider, provider_name, model = _resolve_runtime(request)
+    provider, provider_name, model = _resolve_runtime(request)
     warnings = length_warnings(request.text)
     return {
         **state,
-        "settings": settings,
         "provider": provider,
         "provider_name": provider_name,
         "model": model,
@@ -142,13 +133,11 @@ async def evaluate_iterate_node(state: WorkflowState) -> WorkflowState:
 
 async def optional_nlp_classify_node(state: WorkflowState) -> WorkflowState:
     request = state["request"]
-    settings = state["settings"]
-    enabled = settings.nlp_enabled if request.nlp_enabled is None else request.nlp_enabled
-    if not enabled:
+    if not request.nlp_enabled:
         return {**state, "nlp_applied": False, "nlp_style": None}
 
-    mode = request.nlp_mode or settings.nlp_mode
-    style = request.nlp_style or settings.nlp_style
+    mode = request.nlp_mode or "manual"
+    style = request.nlp_style or "academic"
     style = await choose_nlp_style(state["current_text"], mode, style, state["provider"])
     return {**state, "nlp_applied": True, "nlp_style": style}
 
@@ -172,28 +161,6 @@ async def build_diff_node(state: WorkflowState) -> WorkflowState:
     return {**state, "diff": build_diff(state["original_text"], state["current_text"])}
 
 
-async def persist_record_node(state: WorkflowState) -> WorkflowState:
-    created_at = datetime.now(timezone.utc).isoformat()
-    should_persist_text = not (state["request"].api_key and state["request"].api_key.strip())
-    record_id = insert_history(
-        {
-            "original_text": state["original_text"] if should_persist_text else "[自定义 API Key 请求：内容未在服务器保存]",
-            "raw_output": state["raw_output"] if should_persist_text else "",
-            "rewritten_text": state["current_text"] if should_persist_text else "[自定义 API Key 请求：内容未在服务器保存]",
-            "platform": state["request"].platform,
-            "provider": state["provider_name"],
-            "model": state["model"],
-            "iterations": state["request"].iterations,
-            "warnings": state["warnings"],
-            "nlp_applied": bool(state.get("nlp_applied")),
-            "nlp_style": state.get("nlp_style"),
-            "diff": state["diff"] if should_persist_text else [],
-            "created_at": created_at,
-        }
-    )
-    return {**state, "record_id": record_id, "created_at": created_at}
-
-
 def build_graph():
     graph = StateGraph(WorkflowState)
     graph.add_node("validate_length", validate_length_node)
@@ -203,7 +170,6 @@ def build_graph():
     graph.add_node("optional_nlp_classify", optional_nlp_classify_node)
     graph.add_node("optional_nlp_rewrite", optional_nlp_rewrite_node)
     graph.add_node("build_diff", build_diff_node)
-    graph.add_node("persist_record", persist_record_node)
     graph.set_entry_point("validate_length")
     graph.add_edge("validate_length", "select_prompt")
     graph.add_edge("select_prompt", "llm_rewrite")
@@ -211,34 +177,24 @@ def build_graph():
     graph.add_edge("evaluate_iterate", "optional_nlp_classify")
     graph.add_edge("optional_nlp_classify", "optional_nlp_rewrite")
     graph.add_edge("optional_nlp_rewrite", "build_diff")
-    graph.add_edge("build_diff", "persist_record")
-    graph.add_edge("persist_record", END)
+    graph.add_edge("build_diff", END)
     return graph.compile()
 
 
 async def run_rewrite(request: RewriteRequest) -> RewriteResponse:
     final_state: WorkflowState = await build_graph().ainvoke({"request": request})
-    row = get_history(final_state["record_id"])
-    if row is None:
-        raise RuntimeError("History record was not persisted.")
-    return history_row_to_response(row)
-
-
-def history_row_to_response(row: Any) -> RewriteResponse:
-    return RewriteResponse(
-        id=row["id"],
-        original_text=row["original_text"],
-        rewritten_text=row["rewritten_text"],
-        raw_output=row["raw_output"],
-        platform=row["platform"],
-        provider=row["provider"],
-        model=row["model"],
-        iterations=row["iterations"],
-        warnings=json.loads(row["warnings_json"]),
-        nlp_applied=bool(row["nlp_applied"]),
-        nlp_style=row["nlp_style"],
-        diff=json.loads(row["diff_json"]),
-        created_at=datetime.fromisoformat(row["created_at"]),
+    return build_rewrite_response(
+        original_text=final_state["original_text"],
+        rewritten_text=final_state["current_text"],
+        raw_output=final_state["raw_output"],
+        platform=request.platform,
+        provider=final_state["provider_name"],
+        model=final_state["model"],
+        iterations=request.iterations,
+        warnings=final_state["warnings"],
+        nlp_applied=bool(final_state.get("nlp_applied")),
+        nlp_style=final_state.get("nlp_style"),
+        diff=final_state["diff"],
     )
 
 

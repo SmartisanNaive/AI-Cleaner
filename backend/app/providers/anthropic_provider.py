@@ -45,7 +45,7 @@ class AnthropicProvider:
             chunks = [block.text for block in response.content if getattr(block, "type", None) == "text"]
             return "".join(chunks)
         except Exception:
-            logger.exception("Anthropic complete failed: model=%s base_url=%s", self.config.model, self.config.base_url)
+            logger.exception("Anthropic complete failed: model=%s", self.config.model)
             raise
 
     async def stream(self, messages: list[dict[str, str]], request_id: str | None = None) -> AsyncIterator[str]:
@@ -64,6 +64,5 @@ class AnthropicProvider:
                     if text:
                         yield text
         except Exception:
-            logger.exception("Anthropic stream failed: request_id=%s model=%s base_url=%s", request_id, self.config.model, self.config.base_url)
+            logger.exception("Anthropic stream failed: request_id=%s model=%s", request_id, self.config.model)
             raise
-

@@ -4,7 +4,6 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
-DB_PATH = DATA_DIR / "ai_cleaner.sqlite3"
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
 
 DEFAULT_OPENAI_BASE_URL = "https://api.openai.com/v1"

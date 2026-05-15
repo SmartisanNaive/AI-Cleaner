@@ -4,23 +4,23 @@ export type PlatformName = 'weipu' | 'paperyy' | 'paperpass' | 'zhuque'
 export type NlpMode = 'off' | 'manual' | 'auto'
 export type NlpStyle = 'academic' | 'general' | 'long_blog'
 
-export interface SettingsView {
+export interface LocalSettings {
   provider: ProviderName
   openai_model: string
   anthropic_model: string
   openai_base_url: string
   anthropic_base_url: string
-  openai_api_key_set: boolean
-  anthropic_api_key_set: boolean
-  openai_api_key_source: string
-  anthropic_api_key_source: string
+  openai_api_key: string
+  anthropic_api_key: string
+  remember_api_keys: boolean
+  remember_history: boolean
   stream: boolean
   nlp_enabled: boolean
   nlp_mode: NlpMode
   nlp_style: NlpStyle
-  openai_request_url: string
-  anthropic_request_url: string
-  warnings: string[]
+  nlp_best_of_n: number
+  nlp_seed: string
+  nlp_aggressive: boolean
 }
 
 export interface RewriteRequest {

@@ -3,49 +3,48 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
-from uuid import uuid4
-from datetime import datetime, timezone
+from contextlib import asynccontextmanager
 from typing import Any, AsyncIterator
+from uuid import uuid4
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from .constants import (
-    ANTHROPIC_MESSAGES_PATH,
-    DEFAULT_ANTHROPIC_BASE_URL,
-    DEFAULT_OPENAI_BASE_URL,
-    OPENAI_CHAT_COMPLETIONS_PATH,
-)
 from .aigc_detector import detect_aigc_risk, format_aigc_report_for_prompt
-from .database import configure_database, delete_history, get_history, insert_history, list_history
 from .diffing import build_diff, length_warnings
+from .logging_utils import configure_logging_redaction
 from .nlp.pipeline import choose_nlp_style, rewrite_with_nlp, rewrite_with_nlp_style
 from .prompt_service import build_messages, extract_rewritten_text
 from .providers import get_provider
-from .schemas import (
-    HistoryItem,
-    NlpRewriteRequest,
-    RewriteRequest,
-    RewriteResponse,
-    SettingsPayload,
-    SettingsTestRequest,
-    SettingsTestResponse,
-    SettingsView,
-)
-from .settings_service import load_settings, save_settings, settings_view
-from .workflow import history_row_to_response, run_rewrite
+from .response_utils import build_rewrite_response
+from .runtime_config import resolve_provider_config
+from .schemas import NlpRewriteRequest, RewriteRequest, RewriteResponse, SettingsTestRequest, SettingsTestResponse
+from .workflow import run_rewrite
 
 
 logger = logging.getLogger(__name__)
 
 
-app = FastAPI(title="AI-Cleaner", version="0.1.1")
+def allowed_origins() -> list[str]:
+    raw = os.getenv("AI_CLEANER_ALLOWED_ORIGINS")
+    if raw:
+        return [origin.strip() for origin in raw.split(",") if origin.strip()]
+    return ["http://127.0.0.1:5173", "http://localhost:5173"]
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    configure_logging_redaction()
+    yield
+
+
+app = FastAPI(title="AI-Cleaner", version="0.1.1", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5173", "http://localhost:5173"],
-    allow_credentials=True,
+    allow_origins=allowed_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -54,15 +53,14 @@ NLP_STREAM_CHUNK_SIZE = 8
 NLP_STREAM_DELAY_SECONDS = 0.006
 
 
-@app.on_event("startup")
-async def startup() -> None:
-    configure_database()
-
-
-def preview_request_url(provider: str, base_url: str | None) -> str:
-    if provider == "openai":
-        return (base_url or DEFAULT_OPENAI_BASE_URL).rstrip("/") + OPENAI_CHAT_COMPLETIONS_PATH
-    return (base_url or DEFAULT_ANTHROPIC_BASE_URL).rstrip("/") + ANTHROPIC_MESSAGES_PATH
+@app.middleware("http")
+async def add_no_store_headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
 
 
 def sse(event: str, data: Any) -> str:
@@ -80,31 +78,15 @@ async def stream_text(event: str, text: str) -> AsyncIterator[str]:
         await asyncio.sleep(NLP_STREAM_DELAY_SECONDS)
 
 
-@app.get("/api/settings", response_model=SettingsView)
-async def get_settings() -> SettingsView:
-    return settings_view()
-
-
-@app.put("/api/settings", response_model=SettingsView)
-async def put_settings(payload: SettingsPayload) -> SettingsView:
-    return settings_view(save_settings(payload))
-
-
 @app.post("/api/settings/test", response_model=SettingsTestResponse)
 async def test_settings(payload: SettingsTestRequest) -> SettingsTestResponse:
-    settings = load_settings()
-    provider_name = payload.provider or settings.provider
-    model = payload.model or settings.model_for(provider_name)
-    base_url = payload.base_url or settings.base_url_for(provider_name)
-    request_url = preview_request_url(provider_name, base_url)
-    resolved_api_key = payload.api_key.strip() if payload.api_key and payload.api_key.strip() else None
-    provider = get_provider(
-        settings,
-        provider_name=provider_name,
-        model=model,
-        base_url=base_url,
-        api_key=resolved_api_key or settings.api_key_for(provider_name),
+    config = resolve_provider_config(
+        provider_name=payload.provider,
+        model=payload.model,
+        base_url=payload.base_url,
+        api_key=payload.api_key,
     )
+    provider = get_provider(config)
     start = time.perf_counter()
     try:
         text = await provider.complete(
@@ -115,16 +97,16 @@ async def test_settings(payload: SettingsTestRequest) -> SettingsTestResponse:
         )
         return SettingsTestResponse(
             ok=True,
-            provider=provider_name,  # type: ignore[arg-type]
-            request_url=request_url,
+            provider=config.provider,  # type: ignore[arg-type]
+            request_url=config.request_url,
             latency_ms=round((time.perf_counter() - start) * 1000),
             response_preview=text[:240],
         )
     except Exception as exc:
         return SettingsTestResponse(
             ok=False,
-            provider=provider_name,  # type: ignore[arg-type]
-            request_url=request_url,
+            provider=config.provider,  # type: ignore[arg-type]
+            request_url=config.request_url,
             latency_ms=round((time.perf_counter() - start) * 1000),
             error=str(exc),
         )
@@ -147,27 +129,19 @@ async def nlp_rewrite(payload: NlpRewriteRequest) -> RewriteResponse:
         seed=payload.seed,
     )
     diff = build_diff(payload.text, rewritten)
-    created_at = datetime.now(timezone.utc).isoformat()
-    record_id = insert_history(
-        {
-            "original_text": payload.text,
-            "raw_output": rewritten,
-            "rewritten_text": rewritten,
-            "platform": payload.platform,
-            "provider": "local",
-            "model": "humanize-chinese",
-            "iterations": 0,
-            "warnings": warnings,
-            "nlp_applied": True,
-            "nlp_style": style,
-            "diff": diff,
-            "created_at": created_at,
-        }
+    return build_rewrite_response(
+        original_text=payload.text,
+        rewritten_text=rewritten,
+        raw_output=rewritten,
+        platform=payload.platform,
+        provider="local",
+        model="humanize-chinese",
+        iterations=0,
+        warnings=warnings,
+        nlp_applied=True,
+        nlp_style=style,
+        diff=diff,
     )
-    row = get_history(record_id)
-    if row is None:
-        raise RuntimeError("History record was not persisted.")
-    return history_row_to_response(row)
 
 
 async def nlp_stream_events(payload: NlpRewriteRequest) -> AsyncIterator[str]:
@@ -198,36 +172,20 @@ async def nlp_stream_events(payload: NlpRewriteRequest) -> AsyncIterator[str]:
         diff = build_diff(payload.text, rewritten)
         yield sse("diff_ready", {"diff": diff})
 
-        yield sse("node_started", {"node": "persist_record"})
-        created_at = datetime.now(timezone.utc).isoformat()
-        record_id = insert_history(
-            {
-                "original_text": payload.text,
-                "raw_output": rewritten,
-                "rewritten_text": rewritten,
-                "platform": payload.platform,
-                "provider": "local",
-                "model": "humanize-chinese",
-                "iterations": 0,
-                "warnings": warnings,
-                "nlp_applied": True,
-                "nlp_style": style,
-                "diff": diff,
-                "created_at": created_at,
-            }
+        response = build_rewrite_response(
+            original_text=payload.text,
+            rewritten_text=rewritten,
+            raw_output=rewritten,
+            platform=payload.platform,
+            provider="local",
+            model="humanize-chinese",
+            iterations=0,
+            warnings=warnings,
+            nlp_applied=True,
+            nlp_style=style,
+            diff=diff,
         )
-        yield sse(
-            "done",
-            {
-                "id": record_id,
-                "text": rewritten,
-                "raw_output": rewritten,
-                "warnings": warnings,
-                "nlp_style": style,
-                "created_at": created_at,
-                "stream_id": stream_id,
-            },
-        )
+        yield sse("done", response.model_dump(mode="json"))
         logger.info("NLP stream finished stream_id=%s elapsed_ms=%s", stream_id, round((time.perf_counter() - start) * 1000))
     except Exception as exc:
         logger.exception("NLP stream failed stream_id=%s elapsed_ms=%s", stream_id, round((time.perf_counter() - start) * 1000))
@@ -244,26 +202,22 @@ async def rewrite_stream_events(payload: RewriteRequest) -> AsyncIterator[str]:
     start = time.perf_counter()
     chunk_count = 0
     try:
-        settings = load_settings()
-        provider_name = payload.provider or settings.provider
-        model = payload.model or settings.model_for(provider_name)
-        provider = get_provider(
-            settings,
-            provider_name=provider_name,
-            model=model,
+        config = resolve_provider_config(
+            provider_name=payload.provider,
+            model=payload.model,
             base_url=payload.base_url,
             api_key=payload.api_key,
         )
+        provider = get_provider(config)
         warnings = length_warnings(payload.text)
         logger.info(
-            "Rewrite stream started stream_id=%s provider=%s model=%s base_url=%s text_chars=%s",
+            "Rewrite stream started stream_id=%s provider=%s model=%s text_chars=%s",
             stream_id,
-            provider_name,
-            model,
-            provider.config.base_url,
+            config.provider,
+            config.model,
             len(payload.text),
         )
-        yield sse("stream_started", {"stream_id": stream_id, "provider": provider_name, "model": model})
+        yield sse("stream_started", {"stream_id": stream_id, "provider": config.provider, "model": config.model})
         yield sse("node_started", {"node": "validate_length", "warnings": warnings, "stream_id": stream_id})
 
         yield sse("node_started", {"node": "select_prompt", "stream_id": stream_id})
@@ -330,17 +284,16 @@ async def rewrite_stream_events(payload: RewriteRequest) -> AsyncIterator[str]:
             current = extract_rewritten_text(payload.platform, raw_output)
             yield sse("iteration_result", {"iteration": iteration, "text": current})
 
-        enabled = settings.nlp_enabled if payload.nlp_enabled is None else payload.nlp_enabled
         nlp_applied = False
         nlp_style: str | None = None
-        if enabled:
+        if payload.nlp_enabled:
             yield sse("node_started", {"node": "optional_nlp_classify"})
             nlp_applied = True
-            mode = payload.nlp_mode or settings.nlp_mode
+            mode = payload.nlp_mode or "manual"
             nlp_style = await choose_nlp_style(
                 current,
                 mode,
-                payload.nlp_style or settings.nlp_style,
+                payload.nlp_style or "academic",
                 provider,
             )
             yield sse("node_started", {"node": "optional_nlp_rewrite", "style": nlp_style})
@@ -360,36 +313,20 @@ async def rewrite_stream_events(payload: RewriteRequest) -> AsyncIterator[str]:
         diff = build_diff(payload.text, current)
         yield sse("diff_ready", {"diff": diff})
 
-        yield sse("node_started", {"node": "persist_record"})
-        created_at = datetime.now(timezone.utc).isoformat()
-        should_persist_text = not (payload.api_key and payload.api_key.strip())
-        record_id = insert_history(
-            {
-                "original_text": payload.text if should_persist_text else "[自定义 API Key 请求：内容未在服务器保存]",
-                "raw_output": raw_output if should_persist_text else "",
-                "rewritten_text": current if should_persist_text else "[自定义 API Key 请求：内容未在服务器保存]",
-                "platform": payload.platform,
-                "provider": provider_name,
-                "model": model,
-                "iterations": payload.iterations,
-                "warnings": warnings,
-                "nlp_applied": nlp_applied,
-                "nlp_style": nlp_style,
-                "diff": diff if should_persist_text else [],
-                "created_at": created_at,
-            }
+        response = build_rewrite_response(
+            original_text=payload.text,
+            rewritten_text=current,
+            raw_output=raw_output,
+            platform=payload.platform,
+            provider=config.provider,
+            model=config.model,
+            iterations=payload.iterations,
+            warnings=warnings,
+            nlp_applied=nlp_applied,
+            nlp_style=nlp_style,
+            diff=diff,
         )
-        yield sse(
-            "done",
-            {
-                "id": record_id,
-                "text": current,
-                "raw_output": raw_output,
-                "warnings": warnings,
-                "created_at": created_at,
-                "stream_id": stream_id,
-            },
-        )
+        yield sse("done", response.model_dump(mode="json"))
         logger.info(
             "Rewrite stream finished stream_id=%s chunks=%s elapsed_ms=%s",
             stream_id,
@@ -409,34 +346,3 @@ async def rewrite_stream_events(payload: RewriteRequest) -> AsyncIterator[str]:
 @app.post("/api/rewrite/stream")
 async def rewrite_stream(payload: RewriteRequest) -> StreamingResponse:
     return StreamingResponse(rewrite_stream_events(payload), media_type="text/event-stream")
-
-
-@app.get("/api/history", response_model=list[HistoryItem])
-async def history() -> list[HistoryItem]:
-    items: list[HistoryItem] = []
-    for row in list_history():
-        items.append(
-            HistoryItem(
-                id=row["id"],
-                platform=row["platform"],
-                provider=row["provider"],
-                model=row["model"],
-                original_preview=row["original_text"][:120],
-                rewritten_preview=row["rewritten_text"][:120],
-                created_at=datetime.fromisoformat(row["created_at"]),
-            )
-        )
-    return items
-
-
-@app.get("/api/history/{record_id}", response_model=RewriteResponse)
-async def history_detail(record_id: int) -> RewriteResponse:
-    row = get_history(record_id)
-    if row is None:
-        raise HTTPException(status_code=404, detail="Record not found")
-    return history_row_to_response(row)
-
-
-@app.delete("/api/history/{record_id}")
-async def history_delete(record_id: int) -> dict[str, bool]:
-    return {"ok": delete_history(record_id)}

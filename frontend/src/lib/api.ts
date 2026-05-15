@@ -1,4 +1,4 @@
-import type { HistoryItem, NlpRewriteRequest, RewriteRequest, RewriteResponse, SettingsView } from '../types'
+import type { NlpRewriteRequest, RewriteRequest, RewriteResponse } from '../types'
 
 async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
@@ -13,9 +13,6 @@ async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export const api = {
-  getSettings: () => jsonFetch<SettingsView>('/api/settings'),
-  saveSettings: (payload: Partial<SettingsView> & Record<string, unknown>) =>
-    jsonFetch<SettingsView>('/api/settings', { method: 'PUT', body: JSON.stringify(payload) }),
   testSettings: (payload: Record<string, unknown>) =>
     jsonFetch<{ ok: boolean; request_url: string; latency_ms: number; response_preview?: string; error?: string }>(
       '/api/settings/test',
@@ -23,11 +20,6 @@ export const api = {
     ),
   rewrite: (payload: RewriteRequest) =>
     jsonFetch<RewriteResponse>('/api/rewrite', { method: 'POST', body: JSON.stringify(payload) }),
-  nlpRewrite: (payload: NlpRewriteRequest) =>
-    jsonFetch<RewriteResponse>('/api/nlp', { method: 'POST', body: JSON.stringify(payload) }),
-  history: () => jsonFetch<HistoryItem[]>('/api/history'),
-  historyDetail: (id: number) => jsonFetch<RewriteResponse>(`/api/history/${id}`),
-  deleteHistory: (id: number) => jsonFetch<{ ok: boolean }>(`/api/history/${id}`, { method: 'DELETE' }),
 }
 
 async function streamJson<TPayload>(

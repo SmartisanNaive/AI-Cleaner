@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
+
+from fastapi.testclient import TestClient
 
 from backend.app.aigc_detector import detect_aigc_risk, format_aigc_report_for_prompt
 from backend.app.diffing import build_diff, length_warnings
+from backend.app.logging_utils import SensitiveLogFilter
+from backend.app.main import app
 from backend.app.nlp.pipeline import choose_nlp_style
 from backend.app.nlp.wrapper import classify_locally, parse_llm_classification
 from backend.app.prompt_service import clean_rewritten_text, extract_rewritten_text, get_prompt
@@ -105,3 +110,42 @@ def test_rewrite_response_accepts_local_nlp_provider():
         created_at=datetime.now(timezone.utc),
     )
     assert response.provider == "local"
+
+
+def test_cloud_api_disables_settings_and_history_routes():
+    client = TestClient(app)
+    assert client.get("/api/settings").status_code == 404
+    assert client.get("/api/history").status_code == 404
+
+
+def test_api_responses_include_no_store(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    client = TestClient(app)
+    response = client.post(
+        "/api/settings/test",
+        json={
+            "provider": "openai",
+            "model": "gpt-5.4",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "",
+        },
+    )
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["pragma"] == "no-cache"
+
+
+def test_sensitive_log_filter_redacts_known_fields():
+    record = logging.LogRecord(
+        name="test",
+        level=logging.ERROR,
+        pathname=__file__,
+        lineno=1,
+        msg="api_key=sk-test authorization=Bearer token base_url=https://example.com",
+        args=(),
+        exc_info=None,
+    )
+    assert SensitiveLogFilter().filter(record) is True
+    assert "sk-test" not in record.msg
+    assert "Bearer token" not in record.msg
+    assert "https://example.com" not in record.msg
+    assert record.msg.count("[REDACTED]") == 3

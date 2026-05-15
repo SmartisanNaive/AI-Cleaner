@@ -31,7 +31,7 @@ class OpenAIProvider:
             )
             return response.choices[0].message.content or ""
         except Exception:
-            logger.exception("OpenAI complete failed: model=%s base_url=%s", self.config.model, self.config.base_url)
+            logger.exception("OpenAI complete failed: model=%s", self.config.model)
             raise
 
     async def stream(self, messages: list[dict[str, str]], request_id: str | None = None) -> AsyncIterator[str]:
@@ -49,6 +49,5 @@ class OpenAIProvider:
                 if delta:
                     yield delta
         except Exception:
-            logger.exception("OpenAI stream failed: request_id=%s model=%s base_url=%s", request_id, self.config.model, self.config.base_url)
+            logger.exception("OpenAI stream failed: request_id=%s model=%s", request_id, self.config.model)
             raise
-

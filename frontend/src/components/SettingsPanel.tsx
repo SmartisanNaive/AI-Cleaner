@@ -1,8 +1,7 @@
 import { PlugZap, Save } from 'lucide-react'
-import type { ProviderName, SettingsView } from '../types'
+import type { ProviderName } from '../types'
 
 interface Props {
-  settings: SettingsView | null
   draft: Record<string, string | boolean>
   testResult: string
   onDraft: (key: string, value: string | boolean) => void
@@ -10,17 +9,16 @@ interface Props {
   onTest: () => void
 }
 
-export function SettingsPanel({ settings, draft, testResult, onDraft, onSave, onTest }: Props) {
-  if (!settings) return <div className="empty-state">设置加载中</div>
-  const provider = (draft.provider || settings.provider) as ProviderName
+export function SettingsPanel({ draft, testResult, onDraft, onSave, onTest }: Props) {
+  const provider = (draft.provider || 'openai') as ProviderName
   const isOpenAI = provider === 'openai'
+  const rememberApiKeys = Boolean(draft.remember_api_keys)
+  const rememberHistory = Boolean(draft.remember_history)
   const providerLabel = isOpenAI ? 'OpenAI' : 'Anthropic'
   const modelKey = isOpenAI ? 'openai_model' : 'anthropic_model'
   const baseUrlKey = isOpenAI ? 'openai_base_url' : 'anthropic_base_url'
   const apiKeyKey = isOpenAI ? 'openai_api_key' : 'anthropic_api_key'
-  const apiKeySet = isOpenAI ? settings.openai_api_key_set : settings.anthropic_api_key_set
-  const apiKeySource = isOpenAI ? settings.openai_api_key_source : settings.anthropic_api_key_source
-  const baseUrl = String(draft[baseUrlKey] || (isOpenAI ? settings.openai_base_url : settings.anthropic_base_url))
+  const baseUrl = String(draft[baseUrlKey] || '')
   const requestUrl = isOpenAI
     ? `${baseUrl.replace(/\/$/, '')}/chat/completions`
     : `${baseUrl.replace(/\/$/, '')}/v1/messages`
@@ -37,7 +35,8 @@ export function SettingsPanel({ settings, draft, testResult, onDraft, onSave, on
     <section className="settings-panel">
       <div className="section-title">设置</div>
       <div className="privacy-note">
-        目前处于演示模式，云端演示可填写自己的 API Key。浏览器设置优先于项目 env，并只保存在你自己的浏览器；当使用自定义 Key 发起改写时，服务器不会保存输入和输出正文。刷新页面仍保留，清除浏览器数据后会清空。
+        云端演示版会临时通过后端转发你的请求，但不会在服务器保存 API Key、Base URL、输入正文、输出结果或历史记录。
+        默认情况下，API Key 和历史只留在当前页面；只有勾选下方选项并点击“保存到浏览器”后，才会写入这台设备的浏览器。公网部署请务必启用 HTTPS。
       </div>
       <label>
         SDK
@@ -52,7 +51,7 @@ export function SettingsPanel({ settings, draft, testResult, onDraft, onSave, on
       </label>
       <label>
         {providerLabel} Base URL
-        <input value={String(draft[baseUrlKey] ?? '')} onChange={(event) => onDraft(baseUrlKey, event.target.value)} />
+        <input value={baseUrl} onChange={(event) => onDraft(baseUrlKey, event.target.value)} />
       </label>
       <form onSubmit={(e) => e.preventDefault()} autoComplete="on">
         <label>
@@ -61,11 +60,39 @@ export function SettingsPanel({ settings, draft, testResult, onDraft, onSave, on
             key={apiKeyKey}
             type="password"
             value={String(draft[apiKeyKey] ?? '')}
-            placeholder={apiKeySet ? `已配置 · ${apiKeySource}` : '可选：使用你的浏览器本地 API Key'}
+            placeholder="默认仅当前页面有效；勾选下方选项后才会写入浏览器"
             onChange={(event) => onDraft(apiKeyKey, event.target.value)}
           />
         </label>
       </form>
+      <label className="stream-card">
+        <input
+          type="checkbox"
+          checked={rememberApiKeys}
+          onChange={(event) => onDraft('remember_api_keys', event.target.checked)}
+        />
+        <span className="stream-visual" aria-hidden="true">
+          <span className="stream-dot" />
+        </span>
+        <span className="stream-copy">
+          <strong>记住 API Key</strong>
+          <small>{rememberApiKeys ? '会保存在当前浏览器资料中，刷新后仍可复用' : '默认更安全；刷新页面后需要重新输入'}</small>
+        </span>
+      </label>
+      <label className="stream-card">
+        <input
+          type="checkbox"
+          checked={rememberHistory}
+          onChange={(event) => onDraft('remember_history', event.target.checked)}
+        />
+        <span className="stream-visual" aria-hidden="true">
+          <span className="stream-dot" />
+        </span>
+        <span className="stream-copy">
+          <strong>记住本地历史</strong>
+          <small>{rememberHistory ? '改写历史会保存在当前浏览器资料中' : '默认不落地；关闭或刷新页面后会清空'}</small>
+        </span>
+      </label>
       <div className="url-preview">{requestUrl}</div>
       {Array.from(new Set(liveWarnings)).map((warning) => (
         <div className="warning" key={warning}>
@@ -88,7 +115,7 @@ export function SettingsPanel({ settings, draft, testResult, onDraft, onSave, on
       </label>
       <div className="settings-actions">
         <button className="primary-button" type="button" onClick={onSave}>
-          <Save size={16} /> 保存
+          <Save size={16} /> 保存到浏览器
         </button>
         <button className="secondary-button" type="button" onClick={onTest}>
           <PlugZap size={16} /> 测试
