@@ -76,7 +76,31 @@ export default function App() {
   }, [])
 
   async function refresh() {
-    const nextSettings = await api.getSettings()
+    let nextSettings: SettingsView
+    try {
+      nextSettings = await api.getSettings()
+    } catch (err) {
+      console.error('[refresh] getSettings failed, using defaults:', err)
+      nextSettings = {
+        provider: 'openai',
+        openai_model: '',
+        anthropic_model: '',
+        openai_base_url: 'https://api.openai.com/v1',
+        anthropic_base_url: 'https://api.anthropic.com',
+        openai_api_key_set: false,
+        anthropic_api_key_set: false,
+        openai_api_key_source: 'missing',
+        anthropic_api_key_source: 'missing',
+        stream: false,
+        nlp_enabled: false,
+        nlp_mode: 'manual',
+        nlp_style: 'academic',
+        openai_request_url: '',
+        anthropic_request_url: '',
+        warnings: [],
+      }
+      setStatus('无法连接后端，请确认服务已启动')
+    }
     setSettings(nextSettings)
     let localOverrides: Record<string, string | boolean> = {}
     try {
@@ -97,7 +121,11 @@ export default function App() {
     setNlpEnabled(nextSettings.nlp_enabled)
     setNlpMode(nextSettings.nlp_mode === 'off' ? 'manual' : nextSettings.nlp_mode)
     setNlpStyle(nextSettings.nlp_style)
-    setHistory(await api.history())
+    try {
+      setHistory(await api.history())
+    } catch (err) {
+      console.error('[refresh] history failed:', err)
+    }
   }
 
   function updateDraft(key: string, value: string | boolean) {

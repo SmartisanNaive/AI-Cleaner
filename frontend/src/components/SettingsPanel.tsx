@@ -54,14 +54,18 @@ export function SettingsPanel({ settings, draft, testResult, onDraft, onSave, on
         {providerLabel} Base URL
         <input value={String(draft[baseUrlKey] ?? '')} onChange={(event) => onDraft(baseUrlKey, event.target.value)} />
       </label>
-      <label>
-        {providerLabel} API Key
-        <input
-          type="password"
-          placeholder={apiKeySet ? `已配置 · ${apiKeySource}` : '可选：使用你的浏览器本地 API Key'}
-          onChange={(event) => onDraft(apiKeyKey, event.target.value)}
-        />
-      </label>
+      <form onSubmit={(e) => e.preventDefault()} autoComplete="on">
+        <label>
+          {providerLabel} API Key
+          <input
+            key={apiKeyKey}
+            type="password"
+            value={String(draft[apiKeyKey] ?? '')}
+            placeholder={apiKeySet ? `已配置 · ${apiKeySource}` : '可选：使用你的浏览器本地 API Key'}
+            onChange={(event) => onDraft(apiKeyKey, event.target.value)}
+          />
+        </label>
+      </form>
       <div className="url-preview">{requestUrl}</div>
       {Array.from(new Set(liveWarnings)).map((warning) => (
         <div className="warning" key={warning}>
