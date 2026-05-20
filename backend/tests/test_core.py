@@ -13,13 +13,6 @@ from backend.app.nlp.pipeline import choose_nlp_style
 from backend.app.nlp.wrapper import classify_locally, parse_llm_classification
 from backend.app.prompt_service import clean_rewritten_text, extract_rewritten_text, get_prompt
 from backend.app.schemas import RewriteResponse
-from backend.app.security import decrypt_secret, encrypt_secret
-
-
-def test_encrypt_secret_roundtrip():
-    encrypted = encrypt_secret("sk-test")
-    assert encrypted and encrypted != "sk-test"
-    assert decrypt_secret(encrypted) == "sk-test"
 
 
 def test_length_warnings():

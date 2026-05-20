@@ -13,39 +13,6 @@ NlpMode = Literal["off", "manual", "auto"]
 NlpStyle = Literal["academic", "general", "long_blog"]
 
 
-class SettingsPayload(BaseModel):
-    provider: ProviderName = "openai"
-    openai_model: str = "gpt-5.4"
-    anthropic_model: str = "claude-4-6-sonnet"
-    openai_base_url: str | None = None
-    anthropic_base_url: str | None = None
-    openai_api_key: str | None = None
-    anthropic_api_key: str | None = None
-    stream: bool = True
-    nlp_enabled: bool = False
-    nlp_mode: NlpMode = "manual"
-    nlp_style: NlpStyle = "academic"
-
-
-class SettingsView(BaseModel):
-    provider: ProviderName
-    openai_model: str
-    anthropic_model: str
-    openai_base_url: str
-    anthropic_base_url: str
-    openai_api_key_set: bool
-    anthropic_api_key_set: bool
-    openai_api_key_source: str
-    anthropic_api_key_source: str
-    stream: bool
-    nlp_enabled: bool
-    nlp_mode: NlpMode
-    nlp_style: NlpStyle
-    openai_request_url: str
-    anthropic_request_url: str
-    warnings: list[str] = Field(default_factory=list)
-
-
 class SettingsTestRequest(BaseModel):
     provider: ProviderName | None = None
     model: str | None = None
@@ -108,14 +75,4 @@ class RewriteResponse(BaseModel):
     nlp_applied: bool
     nlp_style: NlpStyle | None = None
     diff: list[DiffSpan]
-    created_at: datetime
-
-
-class HistoryItem(BaseModel):
-    id: int
-    platform: PlatformName
-    provider: HistoryProviderName
-    model: str
-    original_preview: str
-    rewritten_preview: str
     created_at: datetime
