@@ -21,6 +21,10 @@ const GUST_WIDTH = 280
 const GUST_SPEED = 520
 const GUST_STRENGTH = 0.34
 
+const FPS_SAMPLE_WINDOW = 60
+const FPS_THRESHOLD = 25
+const FPS_FREEZE_CONSECUTIVE_WINDOWS = 3
+
 interface FormulaSprite {
   canvas: HTMLCanvasElement
   width: number
@@ -115,6 +119,8 @@ function createTintedSprite(asset: BackgroundFormulaSpriteAsset, color: string) 
 
 export function WindCanvas() {
   const ref = useRef<HTMLCanvasElement | null>(null)
+  const frozenWarningShown = useRef(false)
+  const frozenRef = useRef(false)
 
   useEffect(() => {
     const canvas = ref.current
@@ -150,6 +156,12 @@ export function WindCanvas() {
       smoothX: -9999,
       smoothY: -9999,
     }
+
+    const frameDurations: number[] = []
+    let lowFpsWindowCount = 0
+    let pageHidden = false
+    let frozen = false
+    let frozenWarningDispatched = false
 
     function build() {
       if (!assetsReady) return
@@ -322,6 +334,34 @@ export function WindCanvas() {
     function draw(now: number) {
       const dt = Math.min(32, now - last)
       last = now
+
+      frameDurations.push(dt)
+      if (frameDurations.length >= FPS_SAMPLE_WINDOW) {
+        const avgDuration = frameDurations.reduce((a, b) => a + b, 0) / frameDurations.length
+        const avgFps = 1000 / avgDuration
+        frameDurations.length = 0
+
+        if (avgFps < FPS_THRESHOLD) {
+          lowFpsWindowCount++
+        } else {
+          lowFpsWindowCount = 0
+        }
+
+        if (lowFpsWindowCount >= FPS_FREEZE_CONSECUTIVE_WINDOWS && !frozen) {
+          frozen = true
+          frozenRef.current = true
+          if (!frozenWarningDispatched) {
+            frozenWarningDispatched = true
+            frozenWarningShown.current = true
+            canvasEl.dispatchEvent(new CustomEvent('windcanvas-frozen', {
+              bubbles: true,
+              detail: { avgFps },
+            }))
+          }
+          return
+        }
+      }
+
       time += dt / 1000
 
       updateWind()
@@ -385,6 +425,21 @@ export function WindCanvas() {
       mouse.y = -9999
     }
 
+    function onVisibilityChange() {
+      if (document.hidden) {
+        pageHidden = true
+        cancelAnimationFrame(raf)
+      } else {
+        pageHidden = false
+        if (!frozen && !disposed) {
+          last = performance.now()
+          frameDurations.length = 0
+          lowFpsWindowCount = 0
+          raf = requestAnimationFrame(draw)
+        }
+      }
+    }
+
     resize()
     void Promise.all(BACKGROUND_FORMULA_SPRITES.map(loadFormulaImage))
       .then(() => {
@@ -404,12 +459,14 @@ export function WindCanvas() {
     window.addEventListener('resize', resize)
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseleave', onLeave)
+    document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
       disposed = true
       cancelAnimationFrame(raf)
       window.removeEventListener('resize', resize)
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseleave', onLeave)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
     }
   }, [])
 

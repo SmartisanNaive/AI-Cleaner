@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Check,
   Copy,
@@ -7,7 +7,7 @@ import {
   RotateCcw,
   Send,
   Settings,
-  Star,
+  Trash2,
   WandSparkles,
 } from 'lucide-react'
 import logoUrl from './assets/logo.png'
@@ -81,6 +81,62 @@ function parseSeed(value: string) {
   return Number.isFinite(seed) ? Math.trunc(seed) : undefined
 }
 
+function useFocusTrap(open: boolean, containerRef: React.RefObject<HTMLElement | null>) {
+  const previouslyFocused = useRef<HTMLElement | null>(null)
+
+  useEffect(() => {
+    if (!open) return
+    previouslyFocused.current = document.activeElement as HTMLElement
+
+    const container = containerRef.current
+    if (!container) return
+
+    const focusFirst = () => {
+      const first = container.querySelector<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
+      if (first) first.focus()
+    }
+    requestAnimationFrame(focusFirst)
+
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        return
+      }
+      if (e.key !== 'Tab') return
+
+      const el = containerRef.current
+      if (!el) return
+      const focusable = el.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+      )
+      if (!focusable.length) return
+
+      const first = focusable[0]
+      const last = focusable[focusable.length - 1]
+
+      if (e.shiftKey) {
+        if (document.activeElement === first) {
+          e.preventDefault()
+          last.focus()
+        }
+      } else {
+        if (document.activeElement === last) {
+          e.preventDefault()
+          first.focus()
+        }
+      }
+    }
+
+    container.addEventListener('keydown', onKeyDown)
+    return () => {
+      container.removeEventListener('keydown', onKeyDown)
+      if (previouslyFocused.current && previouslyFocused.current.focus) {
+        previouslyFocused.current.focus()
+      }
+    }
+  }, [open, containerRef])
+}
+
 function readUiPreferences(): UiPreferences {
   try {
     const saved = window.localStorage.getItem(UI_PREFERENCES_KEY)
@@ -133,8 +189,25 @@ export default function App() {
   const [copied, setCopied] = useState(false)
   const [showLengthModal, setShowLengthModal] = useState(false)
   const [lastAction, setLastAction] = useState<LastAction>(defaultPreferences.lastAction)
+  const [pendingDeleteId, setPendingDeleteId] = useState<number | null>(null)
+  const [canvasFrozen, setCanvasFrozen] = useState(false)
+
+  const lengthModalRef = useRef<HTMLDivElement>(null)
+  const deleteModalRef = useRef<HTMLDivElement>(null)
+  useFocusTrap(showLengthModal, lengthModalRef)
+  useFocusTrap(pendingDeleteId !== null, deleteModalRef)
 
   const charCount = useMemo(() => countText(text), [text])
+
+  useEffect(() => {
+    function onFrozen(e: Event) {
+      const detail = (e as CustomEvent).detail
+      console.warn(`[WindCanvas] Animation frozen due to low FPS (${Math.round(detail.avgFps)}fps avg)`)
+      setCanvasFrozen(true)
+    }
+    document.addEventListener('windcanvas-frozen', onFrozen)
+    return () => document.removeEventListener('windcanvas-frozen', onFrozen)
+  }, [])
 
   useEffect(() => {
     const preferences = readUiPreferences()
@@ -439,9 +512,20 @@ export default function App() {
     setActiveTab('diff')
   }
 
-  async function deleteHistory(id: number) {
+  function requestDeleteHistory(id: number) {
+    setPendingDeleteId(id)
+  }
+
+  async function confirmDelete() {
+    if (pendingDeleteId == null) return
+    const id = pendingDeleteId
+    setPendingDeleteId(null)
     await api.deleteHistory(id)
     setHistory(await api.history())
+  }
+
+  function dismissDelete() {
+    setPendingDeleteId(null)
   }
 
   return (
@@ -462,6 +546,13 @@ export default function App() {
           <div className="status">{status}</div>
         </div>
       </header>
+
+      {canvasFrozen && (
+        <div className="canvas-frozen-banner">
+          <span>背景动画已因帧率不足自动冻结，不影响使用</span>
+          <button type="button" onClick={() => setCanvasFrozen(false)}>关闭</button>
+        </div>
+      )}
 
       <main className="workspace">
         <section className="input-panel animate-fade-in-up" style={{ animationDelay: '0.2s', opacity: 0 }}>
@@ -576,7 +667,7 @@ export default function App() {
           </div>
           <div className="primary-actions">
             <button
-              className={lastAction === 'agent' ? 'primary-button' : 'secondary-button'}
+              className={lastAction === 'agent' ? 'mode-active' : 'secondary-button'}
               disabled={busy || !text.trim()}
               type="button"
               onClick={() => void runRewrite()}
@@ -584,7 +675,7 @@ export default function App() {
               <Send size={16} /> Agent 降 AIGC
             </button>
             <button
-              className={lastAction === 'nlp' ? 'primary-button' : 'secondary-button'}
+              className={lastAction === 'nlp' ? 'mode-active' : 'secondary-button'}
               disabled={busy || !text.trim()}
               type="button"
               onClick={() => void runNlpOnly()}
@@ -634,7 +725,7 @@ export default function App() {
           )}
           {activeTab === 'diff' && <DiffView spans={diff} />}
           {activeTab === 'history' && (
-            <HistoryList items={history} onOpen={(id) => void openHistory(id)} onDelete={(id) => void deleteHistory(id)} />
+            <HistoryList items={history} onOpen={(id) => void openHistory(id)} onDelete={(id) => requestDeleteHistory(id)} />
           )}
           {activeTab === 'settings' && (
             <SettingsPanel
@@ -650,9 +741,16 @@ export default function App() {
       </main>
 
       {showLengthModal && (
-        <div className="modal-backdrop animate-fade-in-overlay" role="dialog" aria-modal="true">
+        <div
+          className="modal-backdrop animate-fade-in-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="length-modal-title"
+          ref={lengthModalRef}
+          onKeyDown={(e) => { if (e.key === 'Escape') setShowLengthModal(false) }}
+        >
           <div className="modal animate-slide-up-overlay">
-            <h2>字数提示</h2>
+            <h2 id="length-modal-title">字数提示</h2>
             <p>当前文本约 {charCount} 字，建议字数处于 300-1200 字之间，否则效果可能不稳定。</p>
             <div className="modal-actions">
               <button className="secondary-button" type="button" onClick={() => setShowLengthModal(false)}>
@@ -660,6 +758,30 @@ export default function App() {
               </button>
               <button className="primary-button" type="button" onClick={() => void runRewrite(true)}>
                 继续改写
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {pendingDeleteId !== null && (
+        <div
+          className="modal-backdrop animate-fade-in-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="delete-modal-title"
+          ref={deleteModalRef}
+          onKeyDown={(e) => { if (e.key === 'Escape') dismissDelete() }}
+        >
+          <div className="modal animate-slide-up-overlay">
+            <h2 id="delete-modal-title">确认删除</h2>
+            <p>此操作不可撤销，确定要删除该条历史记录吗？</p>
+            <div className="modal-actions">
+              <button className="secondary-button" type="button" onClick={dismissDelete}>
+                取消
+              </button>
+              <button className="danger-button" type="button" onClick={() => void confirmDelete()}>
+                <Trash2 size={16} /> 删除
               </button>
             </div>
           </div>
