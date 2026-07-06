@@ -318,29 +318,26 @@ export default function App() {
           if (event === 'node_started') setStatus(`正在进行：${String(d.node)}`)
           if (event === 'nlp_stream_started') {
             streamed = ''
-            setOutput('')
             setStatus(`学术降痕输出 · ${String(d.style ?? 'academic')}`)
           }
           if (event === 'llm_delta') {
             streamed += String(d.delta ?? '')
-            setOutput(streamed)
           }
           if (event === 'nlp_delta') {
             streamed += String(d.delta ?? '')
-            setOutput(streamed)
           }
           if (event === 'iteration_result') {
-            setOutput(String(d.text ?? streamed))
+            streamed = String(d.text ?? streamed)
           }
           if (event === 'nlp_result') {
-            setOutput(String(d.text ?? ''))
+            streamed = String(d.text ?? streamed)
           }
           if (event === 'diff_ready') {
             currentDiff = d.diff as DiffSpan[]
             setDiff(currentDiff)
           }
           if (event === 'done') {
-            setOutput(String(d.text ?? ''))
+            setOutput(String(d.text ?? streamed))
             setRawOutput(String(d.raw_output ?? ''))
             setStatus(`完成 · #${String(d.id)}`)
           }
